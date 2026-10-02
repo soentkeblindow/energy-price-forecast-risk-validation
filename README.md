@@ -2,7 +2,7 @@
 
 Probabilistic forecasts with conformal calibration, ES/VaR backtesting, and regime-conditional validation.
 
-[![CI](https://github.com/soentkeblindow/energy-price-forecast/actions/workflows/ci.yml/badge.svg)](https://github.com/soentkeblindow/energy-price-forecast/actions/workflows/ci.yml)
+[![CI](https://github.com/soentkeblindow/energy-price-forecast-risk-validation/actions/workflows/ci.yml/badge.svg)](https://github.com/soentkeblindow/energy-price-forecast-risk-validation/actions/workflows/ci.yml)
 [![Ruff](https://img.shields.io/badge/lint-ruff-261230?logo=ruff)](https://github.com/astral-sh/ruff)
 [![Typed with mypy](https://img.shields.io/badge/typed-mypy-1f5082?logo=python)](https://mypy-lang.org/)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue?logo=python)](https://www.python.org/)
