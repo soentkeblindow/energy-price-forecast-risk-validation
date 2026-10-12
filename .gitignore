@@ -232,6 +232,9 @@ docs/
 mlruns/
 mlartifacts/
 
+# Sprint 7.0 Umbau: Regressionsanker, bewusst außerhalb von Git (Spec §3.3)
+outputs/regression_reference_v1.0/
+
 # Jupyter Notebook Checkpoints
 .ipynb_checkpoints/
 

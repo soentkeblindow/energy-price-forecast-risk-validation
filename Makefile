@@ -14,11 +14,11 @@ help:
 	@echo "  requirements   Regenerate requirements.txt for Streamlit Community Cloud deployment"
 
 data:
-	uv run python scripts/build_interim.py
-	uv run python scripts/build_features.py
+	uv run python scripts/model_risk_regimes/build_interim.py
+	uv run python scripts/model_risk_regimes/build_features.py
 
 backtest:
-	uv run python scripts/backtest.py --model lgbm
+	uv run python scripts/model_risk_regimes/backtest.py --model lgbm
 
 test:
 	uv run pytest
@@ -29,13 +29,13 @@ lint:
 	uv run mypy src
 
 dashboard:
-	uv run --extra dashboard streamlit run src/energy_price_forecast/dashboard/app.py
+	uv run --extra dashboard streamlit run src/energy_price_forecast/model_risk_regimes/dashboard/app.py
 
 report-assets:
-	uv run python scripts/export_report_assets.py
+	uv run python scripts/model_risk_regimes/export_report_assets.py
 
 dm-test:
-	uv run python scripts/run_dm_test.py
+	uv run python scripts/model_risk_regimes/run_dm_test.py
 
 requirements:
-	uv export --format requirements.txt --extra dashboard --no-dev --no-hashes -o src/energy_price_forecast/dashboard/requirements.txt
+	uv export --format requirements.txt --extra dashboard --no-dev --no-hashes -o src/energy_price_forecast/model_risk_regimes/dashboard/requirements.txt
