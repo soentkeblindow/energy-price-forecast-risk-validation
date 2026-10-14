@@ -40,6 +40,26 @@ def _resolve_window(window_arg: str | None, model: str) -> Literal["expanding", 
     return "rolling" if model == "arimax" else "expanding"
 
 
+def _resolve_target_transform(
+    transform_arg: str | None, model: str
+) -> Literal["asinh", "identity"]:
+    """Return the effective target transform, applying per-model defaults.
+
+    Lasso's asinh/sinh round-trip extrapolates explosively on a feature value
+    far outside its training range (an out-of-distribution commodity price
+    reaching the model via a now-corrected forward-fill, sprint 7.0 step 4.2):
+    one affected hour predicted 4,478 EUR/MWh against a realised 861. Measured
+    fix: identity halves both MAE and RMSE relative to the broken asinh run and
+    removes the outlier entirely, with no corresponding fragility in ridge/ols
+    observed or tested -- their default stays asinh unless overridden.
+    """
+    if transform_arg == "asinh":
+        return "asinh"
+    if transform_arg == "identity":
+        return "identity"
+    return "identity" if model == "lasso" else "asinh"
+
+
 def _parse_order(s: str) -> tuple[int, int, int]:
     """Parse '2,0,1' into (2, 0, 1) for ARIMA order."""
     parts = [p.strip() for p in s.split(",")]
@@ -74,7 +94,15 @@ def _parse_args() -> argparse.Namespace:
         "defaults to 0.5 when not set. Must not be combined with --objective l2.",
     )
     p.add_argument("--random-state", type=int, default=0, help="Random seed for LightGBM.")
-    p.add_argument("--target-transform", default="asinh", choices=["asinh", "identity"])
+    p.add_argument(
+        "--target-transform",
+        default=None,
+        choices=["asinh", "identity"],
+        help="Target transform for lasso/ridge/ols. Default: 'identity' for lasso "
+        "(asinh's sinh back-transform extrapolates explosively on out-of-distribution "
+        "feature values, measured on the commodity-price case, sprint 7.0 step 4.2), "
+        "'asinh' for ridge/ols.",
+    )
     p.add_argument("--study", default="adhoc", help="MLflow tag: logical study grouping.")
     p.add_argument(
         "--experiment",
@@ -200,22 +228,26 @@ def main() -> None:
         y = price.reindex(features.index)
         x = features
         index = pd.DatetimeIndex(features.index)
+        # Resolved unconditionally (cheap, side-effect-free): only the lasso/ridge/ols
+        # branches below consume it, but computing it here avoids relying on static
+        # analysis to prove it's bound only where args.model matches again.
+        target_transform = _resolve_target_transform(args.target_transform, args.model)
         if args.model == "lasso":
             model = LassoForecaster(
-                target_transform=args.target_transform,
+                target_transform=target_transform,
                 cv_splits=args.cv_splits,
                 n_jobs=args.n_jobs,
             )
             extra_params: dict[str, object] = {"cv_splits": args.cv_splits}
-            run_name = f"{args.model}_{args.target_transform}"
+            run_name = f"{args.model}_{target_transform}"
         elif args.model == "ridge":
-            model = RidgeForecaster(target_transform=args.target_transform)
+            model = RidgeForecaster(target_transform=target_transform)
             extra_params = {}
-            run_name = f"{args.model}_{args.target_transform}"
+            run_name = f"{args.model}_{target_transform}"
         elif args.model == "ols":
-            model = OLSForecaster(target_transform=args.target_transform)
+            model = OLSForecaster(target_transform=target_transform)
             extra_params = {}
-            run_name = f"{args.model}_{args.target_transform}"
+            run_name = f"{args.model}_{target_transform}"
         elif args.model == "arimax":
             x = select_arimax_exog(features)
             order = _parse_order(args.arima_order)

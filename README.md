@@ -22,16 +22,16 @@ All metrics on the common 2021-2025 walk-forward test set (rolling-90-day window
 | Model | MAE (EUR/MWh) | RMSE (EUR/MWh) | WAPE |
 |---|---|---|---|
 | Seasonal Naive | 34.77 | 56.20 | 0.290 |
-| Lasso | 58.17 | 139.08 | 0.485 |
+| Lasso | 22.99 | 37.03 | 0.192 |
 | ARIMAX | 22.68 | 35.55 | 0.189 |
 | **LightGBM** | **14.87** | **25.64** | **0.124** |
 
-- **LightGBM leads by a wide margin:** MAE 14.9 EUR/MWh vs. 22.7 for ARIMAX (the best alternative) and 34.8 for the naive benchmark — roughly 34% lower error than the best alternative model. Lasso's 58.2 is not representative of baseline linear performance; see the Lasso finding under Honest limitations below.
+- **LightGBM leads by a wide margin:** MAE 14.9 EUR/MWh vs. 22.7-23.0 for ARIMAX/Lasso and 34.8 for the naive benchmark — roughly 34% lower error than the best alternative model.
 - **That edge is not noise:** a Diebold-Mariano test on daily mean absolute-error loss differentials (Newey-West HAC, Harvey correction) confirms the LightGBM advantage over both benchmarks; an hourly HAC variant yields the same conclusion (see `outputs/results/dm_test.csv`).
 
 | Comparison | Mean loss diff. (EUR/MWh) | DM statistic | p-value | n (days) |
 |---|---|---|---|---|
-| LightGBM vs. Lasso | -43.27 | -8.24 | < 0.001 | 1827 |
+| LightGBM vs. Lasso | -8.12 | -13.71 | < 0.001 | 1827 |
 | LightGBM vs. ARIMAX | -7.80 | -14.55 | < 0.001 | 1827 |
 
 **Calibration and risk:**
@@ -114,7 +114,7 @@ make report-assets
 - **Kupiec on the raw hourly series is anti-conservative.** It rejects 45 of the same 60 cells, more than the bootstrap's 33, because intra-day breaches are correlated and the hourly chi-square test does not know that. The day-block-bootstrapped test is the one this project reports as the headline; Kupiec is shown alongside it, not in place of it.
 - **ARIMAX's quantile intervals under-cover more severely than LightGBM's, even before calibration.** At the 0.95 level, empirical coverage is 62.4% against a 95% nominal target, vs. LightGBM raw's 81.7% at the same level. This is the documented cost of a classical linear-Gaussian interval assumption against a heavy-tailed, regime-switching price series.
 - **The energy-crisis period (2021/22) is a structural stress test for every model**, not a regime any of them was specifically tuned for; performance there is reported, not excluded.
-- **The Lasso baseline is fragile to an out-of-distribution commodity price.** A data-pipeline fix (forward-filling the daily TTF gas price by real elapsed hours rather than by row count) now correctly carries forward the actual TTF spot price from the August 2022 energy-crisis peak into hours where it was previously `NaN`. That single feature value sits far outside Lasso's training range; its `asinh`/`sinh` target transform extrapolates explosively on it (one affected hour: a 4,478 EUR/MWh prediction against a realised 861 EUR/MWh). LightGBM (tree splits don't extrapolate linearly) and ARIMAX (no commodity exogenous regressor) are unaffected — this is a reported finding about Lasso's extrapolation fragility, not a bug fix applied to Lasso itself; Lasso remains a baseline comparison here, not a candidate model.
+- **The Lasso baseline's `asinh`/`sinh` target transform is fragile to out-of-distribution feature values, found and fixed.** A data-pipeline fix (forward-filling the daily TTF gas price by real elapsed hours rather than by row count) now correctly carries forward the actual TTF spot price from the August 2022 energy-crisis peak into hours where it was previously `NaN`. That single feature value sits far outside Lasso's training range; the `sinh` back-transform extrapolated explosively on it (one affected hour: a 4,478 EUR/MWh prediction against a realised 861 EUR/MWh, before the fix below). LightGBM (tree splits don't extrapolate linearly) and ARIMAX (no commodity exogenous regressor) were never affected. Fix: Lasso's default target transform is now `identity` instead of `asinh` (`--target-transform`, already-implemented alternative from an earlier sprint, not new code) — this removes the extrapolation and, measured end to end, also improves Lasso's regular-case accuracy slightly (MAE 22.99 vs. the pre-fix 24.23 baseline).
 
 ## Future work
 

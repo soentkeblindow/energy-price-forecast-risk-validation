@@ -7,10 +7,12 @@
 > now counts real elapsed hours, not rows) changed every LightGBM/ARIMAX/Lasso
 > prediction throughout the history. Every number in this report has been
 > re-verified against the corrected pipeline; most move by low single digits
-> and change no classification. One exception does change a classification:
-> Lasso's point accuracy degrades sharply (new **Finding 11**) because a
-> now-correctly-filled, extreme historical commodity value exposes a known
-> class of fragility in its linear/`asinh` construction. Full before/after
+> and change no classification. One exception briefly changed a
+> classification and was then fixed within the same day: a now-correctly-filled,
+> extreme historical commodity value exposed a known class of fragility in
+> Lasso's `asinh`/`sinh` target transform (explosive extrapolation), found,
+> diagnosed, and remediated by switching Lasso's default target transform to
+> `identity` (**Finding 11**, Classification: Remediated). Full before/after
 > accounting: `docs/model_risk_regimes/regression_v1.0_to_v1.1.md`.
 
 This document is an independent-validation-style review of a single-author portfolio project. It is written in the form and with the scrutiny of a second line of defence in a model risk function, applied here to a personal project rather than to an organisationally independent review process; that distinction is stated explicitly rather than implied. All figures in this report are traced to persisted, reproducible outputs; none are estimated or recalled from memory.
@@ -21,7 +23,7 @@ This document is an independent-validation-style review of a single-author portf
 
 The reviewed system forecasts hourly German-Luxembourg (DE-LU) day-ahead electricity prices (point and quantile) and derives a trading-book Value-at-Risk (VaR) and Expected Shortfall (ES) for a hypothetical 10 MWh book from the calibrated quantile forecasts. Validation covers both layers: point/quantile forecast accuracy under a leakage-free walk-forward design, and a full statistical backtest of the resulting risk measure (Kupiec, Christoffersen, Acerbi-Szekely, and a month-stratified day-block bootstrap).
 
-The point forecast (LightGBM) outperforms the naive and ARIMAX benchmarks by a wide margin; the Lasso benchmark's reported accuracy is not representative of baseline linear performance for reasons documented in Finding 11, not a methodology defect. The raw quantile forecasts are severely under-covered; scaled conformal recalibration corrects this at the unconditional level, and the resulting calibrated risk measure passes its unconditional backtest (Kupiec does not reject at the `overall` subset for either book side). Conditionally, it does not fully hold: 33 of 60 validated (variant, side, subset) cells reject an honest, day-block-bootstrapped coverage test, concentrated in the evening ramp and the upper forecast-height buckets, and driven by one underlying mechanism: intraday and day-level heteroskedasticity that the current calibration scale does not capture.
+The point forecast (LightGBM) outperforms all evaluated benchmarks (Naive, Lasso, ARIMAX) by a wide margin. The raw quantile forecasts are severely under-covered; scaled conformal recalibration corrects this at the unconditional level, and the resulting calibrated risk measure passes its unconditional backtest (Kupiec does not reject at the `overall` subset for either book side). Conditionally, it does not fully hold: 33 of 60 validated (variant, side, subset) cells reject an honest, day-block-bootstrapped coverage test, concentrated in the evening ramp and the upper forecast-height buckets, and driven by one underlying mechanism: intraday and day-level heteroskedasticity that the current calibration scale does not capture.
 
 **Overall verdict: fit for the stated purpose (probabilistic day-ahead forecasting and risk-measure backtesting under a leakage-free evaluation) within the documented limitations.** The unconditional risk measure is validated and traceable; its conditional weaknesses are known, quantified, and not remediated by the current calibration scale. See the Findings & Limitations catalogue (Section 7) for the complete, classified list.
 
@@ -59,7 +61,7 @@ The point forecast (LightGBM) outperforms the naive and ARIMAX benchmarks by a w
 
 **Leakage control.** The gate-closure information contract (Section 3) is the structural leakage guard; the walk-forward harness additionally asserts `train_index.max() < test_index.min()` on every fold.
 
-**Benchmarks.** Seasonal-naive (`SimilarDayNaive`), Lasso (regularised linear, asinh target transform), and ARIMAX (AR(2) with daily Fourier terms and exogenous regressors) are evaluated under the identical walk-forward protocol as the production LightGBM model, part of the design, not an afterthought (Section 5).
+**Benchmarks.** Seasonal-naive (`SimilarDayNaive`), Lasso (regularised linear, `identity` target transform as of 2026-10-14; see Finding 11 for why `asinh` was replaced), and ARIMAX (AR(2) with daily Fourier terms and exogenous regressors) are evaluated under the identical walk-forward protocol as the production LightGBM model, part of the design, not an afterthought (Section 5).
 
 **Quantile approach.** LightGBM with the quantile objective, one model per level on the seven-level grid above, alpha=0.5 as the point forecast; ARIMAX exposes only a three-level grid (0.05/0.50/0.95) via its own quantile construction and is retained as a classical-method reference curve, not extended to the full grid (a scoped, spec-sanctioned decision: ARIMAX is a benchmark, not the delivery model).
 
@@ -80,28 +82,30 @@ Common 2021-2025 walk-forward test period, pooled MAE/RMSE/WAPE (source: `result
 | Model | MAE (EUR/MWh) | RMSE (EUR/MWh) | WAPE |
 |---|---|---|---|
 | Seasonal Naive | 34.77 | 56.20 | 0.290 |
-| Lasso | 58.17 | 139.08 | 0.485 |
+| Lasso | 22.99 | 37.03 | 0.192 |
 | ARIMAX | 22.68 | 35.55 | 0.189 |
 | **LightGBM** | **14.87** | **25.64** | **0.124** |
 
 (v1.0: Lasso 24.23 / 38.40 / 0.202, ARIMAX 22.87 / 35.74 / 0.191, LightGBM
-15.40 / 26.59 / 0.129 — Lasso's large shift is explained in Finding 11, not
-a general re-ranking of the benchmarks.)
+15.40 / 26.59 / 0.129 — Lasso's number briefly spiked to 58.17/139.08/0.485
+under the data fix alone, before the `identity`-transform remediation in
+Finding 11; it is now slightly *better* than its v1.0 value.)
 
-LightGBM leads every benchmark by a wide margin: roughly 34% lower MAE than the next-best alternative (ARIMAX) and 57% lower than the naive benchmark. Lasso is no longer a meaningful "next-best alternative" comparison point; see Finding 11.
+LightGBM leads every benchmark by a wide margin: roughly 34% lower MAE than the next-best alternative (ARIMAX, with Lasso close behind) and 57% lower than the naive benchmark.
 
 **Significance of the edge (source: `results/dm_test.csv`):** a Diebold-Mariano test on the LightGBM-vs-baseline MAE loss differentials confirms the edge is not sampling noise. The primary variant aggregates losses to daily means (`n` = 1,827 days), since all 24 hours of a delivery day share the same gate-closure information set, so daily means are the natural unit of an independent observation, with a Newey-West HAC variance estimate (`hac_lag` = 7) and the Harvey-Leybourne-Newbold small-sample correction; a robustness variant runs the same test directly on the 43,802 hourly loss differentials (`hac_lag` = 48, accounting for both intraday and day-ahead autocorrelation). Both variants agree:
 
 | Comparison | Variant | n | Mean loss diff. (EUR/MWh) | DM statistic | p-value |
 |---|---|---|---|---|---|
-| LightGBM vs. Lasso | daily | 1,827 | -43.27 | -8.24 | < 0.001 |
-| LightGBM vs. Lasso | hourly | 43,802 | -43.30 | -13.71 | < 0.001 |
+| LightGBM vs. Lasso | daily | 1,827 | -8.12 | -13.71 | < 0.001 |
+| LightGBM vs. Lasso | hourly | 43,802 | -8.12 | -19.14 | < 0.001 |
 | LightGBM vs. ARIMAX | daily | 1,827 | -7.80 | -14.55 | < 0.001 |
 | LightGBM vs. ARIMAX | hourly | 43,802 | -7.81 | -21.29 | < 0.001 |
 
 (v1.0: Lasso daily -8.83/-14.98, hourly -8.83/-21.14; ARIMAX daily
--7.46/-13.64, hourly -7.47/-19.69 — the Lasso comparison's magnitude grew
-substantially, direction and significance unchanged; see Finding 11.)
+-7.46/-13.64, hourly -7.47/-19.69 — direction and significance unchanged
+throughout; see Finding 11 for the Lasso target-transform fix behind the
+small residual difference from v1.0.)
 
 Negative values mean LightGBM has the lower expected loss (sign convention: `mean_loss_diff = mean(loss_lightgbm - loss_other)`). Both variants reject the null of equal predictive accuracy at any conventional significance level.
 
@@ -138,14 +142,14 @@ Point-accuracy breakdown by realised-market regime (source: `../notebooks/04_reg
 | Model | Overall MAE | Crisis MAE | Ratio |
 |---|---|---|---|
 | Seasonal Naive | 34.77 | 57.15 | 1.64x |
-| Lasso | 58.17 | 111.36 | 1.91x |
+| Lasso | 22.99 | 38.88 | 1.69x |
 | LightGBM | 14.87 | 24.30 | 1.63x |
 | ARIMAX | 22.68 | 32.31 | 1.42x |
 
 (v1.0: Lasso 24.23 / 40.86 / 1.69x, LightGBM 15.40 / 25.39 / 1.65x, ARIMAX
-22.87 / 32.38 / 1.42x, Naive unchanged. Lasso's crisis-window degradation
-grew sharply because the Finding-11 extrapolation incidents both fall
-inside this exact window, 2022-03 and 2022-08.)
+22.87 / 32.38 / 1.42x, Naive unchanged — Lasso's crisis ratio matches v1.0
+almost exactly after the Finding-11 remediation, both its overall and
+crisis MAE landing slightly below their v1.0 values.)
 
 ![Forecast vs. actual, daily means](assets/forecast_vs_actual.png)
 
@@ -227,7 +231,7 @@ Eleven findings, ordered by severity (Finding 11 added 2026-10-14). Each carries
 
 ### Finding 6: The crisis macro-regime is a structural stress test for every model
 **Finding:** All four compared models (Naive, Lasso, LightGBM, ARIMAX) show materially worse point accuracy in the 2021-09-01 to 2023-04-01 crisis regime than in their own overall test-period average.
-**Evidence:** Crisis-vs-overall MAE ratio: Naive 1.64x, Lasso 1.91x, LightGBM 1.63x, ARIMAX 1.42x (v1.0: 1.64x / 1.69x / 1.65x / 1.42x; `../notebooks/04_regime_risk.ipynb`, Section 2, table T1). Lasso's ratio grew because the Finding-11 extrapolation incidents both fall inside this exact window. Classification rationale: this is an application-boundary characteristic of the market period, not a model-specific defect (every model, including the simplest benchmark, degrades comparably); reflected in Section 2's stated application boundaries.
+**Evidence:** Crisis-vs-overall MAE ratio: Naive 1.64x, Lasso 1.69x, LightGBM 1.63x, ARIMAX 1.42x (v1.0: 1.64x / 1.69x / 1.65x / 1.42x; `../notebooks/04_regime_risk.ipynb`, Section 2, table T1). Classification rationale: this is an application-boundary characteristic of the market period, not a model-specific defect (every model, including the simplest benchmark, degrades comparably); reflected in Section 2's stated application boundaries.
 **Classification: Accepted**.
 
 ### Finding 7: Raw quantile intervals massively under-cover; scaled conformal calibration corrects this unconditionally
@@ -255,11 +259,12 @@ Eleven findings, ordered by severity (Finding 11 added 2026-10-14). Each carries
 - **A standalone 15-minute-resolution model**: the 2025-09-30 resolution break (Section 3) is currently absorbed by resampling, not modelled directly.
 **Classification: Future Work**.
 
-### Finding 11: Lasso's point accuracy degrades sharply under an extreme, now-correctly-filled commodity feature (new, 2026-10-14)
-**Finding:** A Sprint 7.0 data-pipeline bugfix (commodity forward-fill now counts real elapsed hours, not rows, instead of under-counting real elapsed time on a quarter-hourly-dominated merge index) correctly backfills the TTF gas price into hours that were previously `NaN`, including the August 2022 energy-crisis peak (~339 EUR/MWh, a real historical value, not corrupted data). Lasso's `asinh`/`sinh` target transform extrapolates explosively when this out-of-training-range feature value reaches it, producing isolated predictions far outside any plausible price (one hour: 4,478 EUR/MWh against a realised 861 EUR/MWh). Overall MAE moves from 24.23 to 58.17 EUR/MWh (+140%), RMSE from 38.40 to 139.08 (+262%) — Lasso is now worse than the naive benchmark on both metrics.
-**Evidence:** Worst-error hours cluster exactly at 2022-08-29/30 and 2022-03-09 (`data/processed/backtest_lasso.parquet` vs. `outputs/regression_reference_v1.0/data/processed/backtest_lasso.parquet`); `ttf_gas_lag_48h` at the worst hour is `NaN` in v1.0, `339.20` in v1.1 (`data/processed/features.parquet`). LightGBM (tree splits, no linear extrapolation) and ARIMAX (no commodity exogenous regressor in `ARIMAX_EXOG_COLUMNS`) show no comparable effect — both move by low single digits in the same comparison. Confirmed independent of the forward-fill *duration* parameter (4 vs. 14 days): the identical extreme value is backfilled even at the original 96-hour limit once the row-count-vs-wall-clock-hours bug itself is fixed, isolating the cause to the bugfix, not the duration choice. Full accounting: `docs/model_risk_regimes/regression_v1.0_to_v1.1.md`, section 4.3.
-**Classification rationale:** not remediated and not planned to be — hardening `LassoForecaster` against extrapolation (e.g. feature clipping) would be a content change to a benchmark model, out of scope for the pipeline-level bugfix that exposed it; Lasso is a baseline comparison point in this project, not the delivery model, and the delivery model (LightGBM) is unaffected. Owner-reviewed and accepted 2026-10-14.
-**Classification: Accepted**.
+### Finding 11: Lasso's `asinh`/`sinh` target transform extrapolated explosively under an extreme, now-correctly-filled commodity feature — found and remediated same day (2026-10-14)
+**Finding:** A Sprint 7.0 data-pipeline bugfix (commodity forward-fill now counts real elapsed hours, not rows, instead of under-counting real elapsed time on a quarter-hourly-dominated merge index) correctly backfills the TTF gas price into hours that were previously `NaN`, including the August 2022 energy-crisis peak (~339 EUR/MWh, a real historical value, not corrupted data). Lasso's `asinh`/`sinh` target transform extrapolated explosively when this out-of-training-range feature value reached it, producing isolated predictions far outside any plausible price (one hour: 4,478 EUR/MWh against a realised 861 EUR/MWh). Overall MAE briefly moved from 24.23 to 58.17 EUR/MWh (+140%), RMSE from 38.40 to 139.08 (+262%) — worse than the naive benchmark on both metrics, before the fix below.
+**Evidence:** Worst-error hours clustered exactly at 2022-08-29/30 and 2022-03-09 (`outputs/regression_reference_v1.0/data/processed/backtest_lasso.parquet` vs. the broken intermediate run); `ttf_gas_lag_48h` at the worst hour is `NaN` in v1.0, `339.20` afterward (`data/processed/features.parquet`). LightGBM (tree splits, no linear extrapolation) and ARIMAX (no commodity exogenous regressor in `ARIMAX_EXOG_COLUMNS`) showed no comparable effect. Confirmed independent of the forward-fill *duration* parameter (4 vs. 14 days): the identical extreme value is backfilled even at the original 96-hour limit once the row-count-vs-wall-clock-hours bug itself is fixed, isolating the cause to the bugfix, not the duration choice.
+**Remediation:** `LassoForecaster`'s existing, already-tested `target_transform="identity"` alternative (from an earlier sprint, D5's documented alternative to `asinh`) replaces `asinh` as Lasso's default in `scripts/model_risk_regimes/backtest.py` (`_resolve_target_transform`, per-model default: `identity` for lasso, `asinh` unchanged for ridge/ols, explicit `--target-transform` still overrides either way). Measured, not assumed: MAE 22.99 / RMSE 37.03 — removes the extrapolation entirely *and* slightly improves on the pre-incident v1.0 baseline (24.23 / 38.40). No feature-side change (no clipping, no imputation change) was needed. Ridge/OLS were not tested for the same fragility and keep their `asinh` default unless a similar incident is found.
+**Classification rationale:** a real, measured production-grade defect in a shipped baseline model, found via the Sprint 7.0 data regression and fixed the same day using an already-implemented, already-tested alternative (not new code, not a bugfix to `LassoForecaster` itself) — fits the "Remediated" bar used for Findings 7-9, not "Accepted" (which this project reserves for trade-offs it chooses to live with, not defects it can cheaply fix). Owner-reviewed 2026-10-14. Full accounting: `docs/model_risk_regimes/regression_v1.0_to_v1.1.md`, section 4.3.
+**Classification: Remediated**.
 
 ### Scope note on ARIMAX
 
