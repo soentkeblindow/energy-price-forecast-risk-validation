@@ -1,7 +1,17 @@
 # Model Validation Report — Day-Ahead Power Price Forecasting & Risk Backtesting (DE-LU)
 
-**Date:** 2026-07-15
-**Version:** v1.0
+**Date:** 2026-07-15 (updated 2026-10-14, v1.1)
+**Version:** v1.1
+
+> **2026-10-14 update note:** a data-pipeline bugfix (commodity forward-fill
+> now counts real elapsed hours, not rows) changed every LightGBM/ARIMAX/Lasso
+> prediction throughout the history. Every number in this report has been
+> re-verified against the corrected pipeline; most move by low single digits
+> and change no classification. One exception does change a classification:
+> Lasso's point accuracy degrades sharply (new **Finding 11**) because a
+> now-correctly-filled, extreme historical commodity value exposes a known
+> class of fragility in its linear/`asinh` construction. Full before/after
+> accounting: `docs/model_risk_regimes/regression_v1.0_to_v1.1.md`.
 
 This document is an independent-validation-style review of a single-author portfolio project. It is written in the form and with the scrutiny of a second line of defence in a model risk function, applied here to a personal project rather than to an organisationally independent review process; that distinction is stated explicitly rather than implied. All figures in this report are traced to persisted, reproducible outputs; none are estimated or recalled from memory.
 
@@ -11,7 +21,7 @@ This document is an independent-validation-style review of a single-author portf
 
 The reviewed system forecasts hourly German-Luxembourg (DE-LU) day-ahead electricity prices (point and quantile) and derives a trading-book Value-at-Risk (VaR) and Expected Shortfall (ES) for a hypothetical 10 MWh book from the calibrated quantile forecasts. Validation covers both layers: point/quantile forecast accuracy under a leakage-free walk-forward design, and a full statistical backtest of the resulting risk measure (Kupiec, Christoffersen, Acerbi-Szekely, and a month-stratified day-block bootstrap).
 
-The point forecast (LightGBM) outperforms all evaluated benchmarks (Naive, Lasso, ARIMAX) by a wide margin. The raw quantile forecasts are severely under-covered; scaled conformal recalibration corrects this at the unconditional level, and the resulting calibrated risk measure passes its unconditional backtest (Kupiec does not reject at the `overall` subset for either book side). Conditionally, it does not fully hold: 35 of 60 validated (variant, side, subset) cells reject an honest, day-block-bootstrapped coverage test, concentrated in the evening ramp and the upper forecast-height buckets, and driven by one underlying mechanism: intraday and day-level heteroskedasticity that the current calibration scale does not capture.
+The point forecast (LightGBM) outperforms the naive and ARIMAX benchmarks by a wide margin; the Lasso benchmark's reported accuracy is not representative of baseline linear performance for reasons documented in Finding 11, not a methodology defect. The raw quantile forecasts are severely under-covered; scaled conformal recalibration corrects this at the unconditional level, and the resulting calibrated risk measure passes its unconditional backtest (Kupiec does not reject at the `overall` subset for either book side). Conditionally, it does not fully hold: 33 of 60 validated (variant, side, subset) cells reject an honest, day-block-bootstrapped coverage test, concentrated in the evening ramp and the upper forecast-height buckets, and driven by one underlying mechanism: intraday and day-level heteroskedasticity that the current calibration scale does not capture.
 
 **Overall verdict: fit for the stated purpose (probabilistic day-ahead forecasting and risk-measure backtesting under a leakage-free evaluation) within the documented limitations.** The unconditional risk measure is validated and traceable; its conditional weaknesses are known, quantified, and not remediated by the current calibration scale. See the Findings & Limitations catalogue (Section 7) for the complete, classified list.
 
@@ -70,20 +80,28 @@ Common 2021-2025 walk-forward test period, pooled MAE/RMSE/WAPE (source: `result
 | Model | MAE (EUR/MWh) | RMSE (EUR/MWh) | WAPE |
 |---|---|---|---|
 | Seasonal Naive | 34.77 | 56.20 | 0.290 |
-| Lasso | 24.23 | 38.40 | 0.202 |
-| ARIMAX | 22.87 | 35.74 | 0.191 |
-| **LightGBM** | **15.40** | **26.59** | **0.129** |
+| Lasso | 58.17 | 139.08 | 0.485 |
+| ARIMAX | 22.68 | 35.55 | 0.189 |
+| **LightGBM** | **14.87** | **25.64** | **0.124** |
 
-LightGBM leads every benchmark by a wide margin: roughly 33-36% lower MAE than the next-best alternative (ARIMAX, Lasso) and 56% lower than the naive benchmark.
+(v1.0: Lasso 24.23 / 38.40 / 0.202, ARIMAX 22.87 / 35.74 / 0.191, LightGBM
+15.40 / 26.59 / 0.129 — Lasso's large shift is explained in Finding 11, not
+a general re-ranking of the benchmarks.)
+
+LightGBM leads every benchmark by a wide margin: roughly 34% lower MAE than the next-best alternative (ARIMAX) and 57% lower than the naive benchmark. Lasso is no longer a meaningful "next-best alternative" comparison point; see Finding 11.
 
 **Significance of the edge (source: `results/dm_test.csv`):** a Diebold-Mariano test on the LightGBM-vs-baseline MAE loss differentials confirms the edge is not sampling noise. The primary variant aggregates losses to daily means (`n` = 1,827 days), since all 24 hours of a delivery day share the same gate-closure information set, so daily means are the natural unit of an independent observation, with a Newey-West HAC variance estimate (`hac_lag` = 7) and the Harvey-Leybourne-Newbold small-sample correction; a robustness variant runs the same test directly on the 43,802 hourly loss differentials (`hac_lag` = 48, accounting for both intraday and day-ahead autocorrelation). Both variants agree:
 
 | Comparison | Variant | n | Mean loss diff. (EUR/MWh) | DM statistic | p-value |
 |---|---|---|---|---|---|
-| LightGBM vs. Lasso | daily | 1,827 | -8.83 | -14.98 | < 0.001 |
-| LightGBM vs. Lasso | hourly | 43,802 | -8.83 | -21.14 | < 0.001 |
-| LightGBM vs. ARIMAX | daily | 1,827 | -7.46 | -13.64 | < 0.001 |
-| LightGBM vs. ARIMAX | hourly | 43,802 | -7.47 | -19.69 | < 0.001 |
+| LightGBM vs. Lasso | daily | 1,827 | -43.27 | -8.24 | < 0.001 |
+| LightGBM vs. Lasso | hourly | 43,802 | -43.30 | -13.71 | < 0.001 |
+| LightGBM vs. ARIMAX | daily | 1,827 | -7.80 | -14.55 | < 0.001 |
+| LightGBM vs. ARIMAX | hourly | 43,802 | -7.81 | -21.29 | < 0.001 |
+
+(v1.0: Lasso daily -8.83/-14.98, hourly -8.83/-21.14; ARIMAX daily
+-7.46/-13.64, hourly -7.47/-19.69 — the Lasso comparison's magnitude grew
+substantially, direction and significance unchanged; see Finding 11.)
 
 Negative values mean LightGBM has the lower expected loss (sign convention: `mean_loss_diff = mean(loss_lightgbm - loss_other)`). Both variants reject the null of equal predictive accuracy at any conventional significance level.
 
@@ -93,15 +111,19 @@ Nominal vs. empirical one-sided coverage per quantile level (source: `results/co
 
 | Nominal level | LightGBM raw | LightGBM calibrated | ARIMAX raw |
 |---|---|---|---|
-| 0.05 | 0.173 | 0.050 | 0.120 |
-| 0.10 | 0.238 | 0.101 | -- |
-| 0.25 | 0.377 | 0.249 | -- |
-| 0.50 | 0.492 | 0.499 | 0.321 |
-| 0.75 | 0.609 | 0.746 | -- |
-| 0.90 | 0.743 | 0.895 | -- |
-| 0.95 | 0.811 | 0.947 | 0.623 |
+| 0.05 | 0.170 | 0.050 | 0.115 |
+| 0.10 | 0.234 | 0.102 | -- |
+| 0.25 | 0.369 | 0.247 | -- |
+| 0.50 | 0.489 | 0.497 | 0.318 |
+| 0.75 | 0.609 | 0.748 | -- |
+| 0.90 | 0.746 | 0.895 | -- |
+| 0.95 | 0.817 | 0.947 | 0.624 |
 
-Raw LightGBM under-covers at every level (worst at the extremes); the calibrated curve tracks the nominal-vs-empirical diagonal closely across the whole grid. The nested 90% band's empirical coverage is 0.638 against a 0.90 nominal target before calibration (`data/processed/reliability_bands.csv`, not checked in, reproducible via `scripts/evaluate_reliability.py`), widening to 1.67x-2.17x the raw band width after calibration+rearrangement depending on band width (90%/80%/50% nested bands respectively; `data/processed/conformal_bands_raw.csv` vs. `conformal_bands_sorted.csv`, not checked in, reproducible via `scripts/calibrate_conformal.py`).
+(v1.0: LightGBM raw 0.173/0.238/0.377/0.492/0.609/0.743/0.811; LightGBM
+calibrated 0.050/0.101/0.249/0.499/0.746/0.895/0.947; ARIMAX raw
+0.120/0.321/0.623 — all within noise.)
+
+Raw LightGBM under-covers at every level (worst at the extremes); the calibrated curve tracks the nominal-vs-empirical diagonal closely across the whole grid. The nested 90% band's empirical coverage is 0.646 against a 0.90 nominal target before calibration (v1.0: 0.638; `data/processed/reliability_bands.csv`, not checked in, reproducible via `scripts/evaluate_reliability.py`), widening to 1.64x-2.11x the raw band width after calibration+rearrangement depending on band width (90%/80%/50% nested bands respectively; v1.0: 1.66x-2.17x; `data/processed/conformal_bands_raw.csv` vs. `conformal_bands_sorted.csv`, not checked in, reproducible via `scripts/calibrate_conformal.py`).
 
 <img src="assets/reliability_diagram.png" alt="Reliability diagram" width="420">
 
@@ -116,9 +138,14 @@ Point-accuracy breakdown by realised-market regime (source: `../notebooks/04_reg
 | Model | Overall MAE | Crisis MAE | Ratio |
 |---|---|---|---|
 | Seasonal Naive | 34.77 | 57.15 | 1.64x |
-| Lasso | 24.23 | 40.86 | 1.69x |
-| LightGBM | 15.40 | 25.39 | 1.65x |
-| ARIMAX | 22.87 | 32.38 | 1.42x |
+| Lasso | 58.17 | 111.36 | 1.91x |
+| LightGBM | 14.87 | 24.30 | 1.63x |
+| ARIMAX | 22.68 | 32.31 | 1.42x |
+
+(v1.0: Lasso 24.23 / 40.86 / 1.69x, LightGBM 15.40 / 25.39 / 1.65x, ARIMAX
+22.87 / 32.38 / 1.42x, Naive unchanged. Lasso's crisis-window degradation
+grew sharply because the Finding-11 extrapolation incidents both fall
+inside this exact window, 2022-03 and 2022-08.)
 
 ![Forecast vs. actual, daily means](assets/forecast_vs_actual.png)
 
@@ -128,7 +155,7 @@ Every model degrades materially in the crisis macro-regime (2021-09-01 to 2023-0
 
 ### 5.4 ARIMAX as benchmark
 
-ARIMAX is retained throughout this report as a classical-method benchmark, not as a delivery model. Its quantile intervals under-cover more severely than LightGBM's own raw intervals: 62.3% empirical coverage at the 0.95 nominal level (Section 5.2) and 50.3% empirical coverage on the nested 90% band (`data/processed/reliability_bands.csv`, not checked in) against a 90% nominal target: the documented cost of a classical linear-Gaussian one-step-innovation interval construction against a heavy-tailed, regime-switching price series. ARIMAX additionally shows a systematic point-forecast underestimation in the post-crisis regime (mean signed error -14.36 EUR/MWh, computed from `data/processed/preds_arimax_v2_q50.parquet` grouped by `tag_regimes()`'s `macro_regime`, not checked in). Both properties are reported here as part of the benchmark characterisation; consistent with the scope note in Section 7 ("Scope note on ARIMAX"), neither is carried as a numbered Finding, since Findings in this report are scoped to the delivery model (LightGBM) and the risk-measure chain built on it.
+ARIMAX is retained throughout this report as a classical-method benchmark, not as a delivery model. Its quantile intervals under-cover more severely than LightGBM's own raw intervals: 62.4% empirical coverage at the 0.95 nominal level (Section 5.2) and 50.9% empirical coverage on the nested 90% band (v1.0: 62.3% / 50.3%; `data/processed/reliability_bands.csv`, not checked in) against a 90% nominal target: the documented cost of a classical linear-Gaussian one-step-innovation interval construction against a heavy-tailed, regime-switching price series. ARIMAX additionally shows a systematic point-forecast underestimation in the post-crisis regime (mean signed error -14.19 EUR/MWh, v1.0: -14.36; computed from `data/processed/preds_arimax_v2_q50.parquet` grouped by `tag_regimes()`'s `macro_regime`, not checked in). Both properties are reported here as part of the benchmark characterisation; consistent with the scope note in Section 7 ("Scope note on ARIMAX"), neither is carried as a numbered Finding, since Findings in this report are scoped to the delivery model (LightGBM) and the risk-measure chain built on it.
 
 ---
 
@@ -138,12 +165,17 @@ ARIMAX is retained throughout this report as a classical-method benchmark, not a
 
 | Variant | Side | Breach rate | 95% CI | Kupiec p | `z1` | `z1` 95% CI |
 |---|---|---|---|---|---|---|
-| `raw` (counterfactual) | long | 0.183 | -- | 0.000 | -- | -- |
-| `raw` (counterfactual) | short | 0.178 | -- | 0.000 | -- | -- |
-| `calibrated` | long | 0.049 | [0.044, 0.054] | 0.308 | -0.108 | [-0.136, -0.078] |
-| `calibrated` | short | 0.052 | [0.046, 0.057] | 0.121 | -0.052 | [-0.084, -0.018] |
-| `fhs` | long | 0.049 | [0.044, 0.054] | 0.379 | -0.011 | [-0.044, 0.024] |
-| `fhs` | short | 0.050 | [0.045, 0.055] | 0.697 | 0.014 | [-0.024, 0.056] |
+| `raw` (counterfactual) | long | 0.180 | -- | 0.000 | -- | -- |
+| `raw` (counterfactual) | short | 0.173 | -- | 0.000 | -- | -- |
+| `calibrated` | long | 0.049 | [0.044, 0.054] | 0.405 | -0.103 | [-0.130, -0.075] |
+| `calibrated` | short | 0.052 | [0.047, 0.057] | 0.132 | -0.063 | [-0.096, -0.029] |
+| `fhs` | long | 0.049 | [0.044, 0.054] | 0.392 | -0.011 | [-0.043, 0.024] |
+| `fhs` | short | 0.049 | [0.044, 0.054] | 0.379 | 0.014 | [-0.024, 0.059] |
+
+(v1.0: raw 0.183/0.178; calibrated long/short 0.049 [0.044,0.054]/0.308/
+-0.108 and 0.052 [0.046,0.057]/0.121/-0.052; fhs long/short 0.049
+[0.044,0.054]/0.379/-0.011 and 0.050 [0.045,0.055]/0.697/0.014 — same
+pass/fail conclusion throughout.)
 
 `raw` is shown only for contrast: an uncalibrated quantile grid has no mass beyond its own boundary and cannot support a validated ES; it is never treated as a risk number in this project. Both validated variants (`calibrated`, `fhs`) pass Kupiec's unconditional frequency test at `overall` for both book sides, and their `z1` confidence intervals are small in magnitude (`calibrated` mildly conservative, `fhs` centred close to zero).
 
@@ -151,66 +183,66 @@ ARIMAX is retained throughout this report as a classical-method benchmark, not a
 
 <img src="assets/coverage_forest.png" alt="Coverage forest plot" width="600">
 
-The figure plots breach-rate bootstrap confidence intervals for every (variant in {`calibrated`, `fhs`} x side x subset) combination: 15 conditioning subsets (`overall`; 5 hour-of-day phases; 7 forecast-height buckets; 2 forecast-based regime subsets) x 2 variants x 2 sides, `raw` overlaid as an open-marker counterfactual. 35 of these 60 cells have a breach-rate CI that excludes the nominal 0.05 (source: `results/backtest_coverage.csv`, column `breach_rate_ci_excludes_alpha`), concentrated in the evening ramp and the tail forecast-height buckets (Finding 1, Section 7).
+The figure plots breach-rate bootstrap confidence intervals for every (variant in {`calibrated`, `fhs`} x side x subset) combination: 15 conditioning subsets (`overall`; 5 hour-of-day phases; 7 forecast-height buckets; 2 forecast-based regime subsets) x 2 variants x 2 sides, `raw` overlaid as an open-marker counterfactual. 33 of these 60 cells have a breach-rate CI that excludes the nominal 0.05 (v1.0: 35; source: `results/backtest_coverage.csv`, column `breach_rate_ci_excludes_alpha`), concentrated in the evening ramp and the tail forecast-height buckets (Finding 1, Section 7).
 
 **Three independent test families, three different questions:**
-- **Kupiec** sees frequency only: does the breach rate match `1 - level`? Run on the raw hourly series (intraday breaches are correlated there), it is anti-conservative: it rejects 43 of the same 60 cells, a strict superset of the bootstrap's 35 (Finding 9, Section 7).
-- **Christoffersen** sees clustering only: do breaches bunch up in time? The day-level `LR_ind` statistic is 53-104 across the four validated (variant, side) combinations at `overall`, all rejecting independence against the chi-square(1) critical value of 3.84 (Finding 2, Section 7).
+- **Kupiec** sees frequency only: does the breach rate match `1 - level`? Run on the raw hourly series (intraday breaches are correlated there), it is anti-conservative: it rejects 45 of the same 60 cells (v1.0: 43), a strict superset of the bootstrap's 33 (v1.0: 35) (Finding 9, Section 7).
+- **Christoffersen** sees clustering only: do breaches bunch up in time? The day-level `LR_ind` statistic is 49-79 (v1.0: 53-104) across the four validated (variant, side) combinations at `overall`, all rejecting independence against the chi-square(1) critical value of 3.84 (Finding 2, Section 7).
 - **Acerbi-Szekely (`z1`/`z2`)** sees severity only: when a breach happens, is it larger than the predicted ES? See the headline table above and Finding 5 (Section 7).
 
 No single test family tells the whole story; all three are reported together, and the honest, day-block-bootstrapped coverage test, not Kupiec, carries the project's headline verdict on conditional calibration (Finding 9).
 
-**Basel traffic-light cross-check (illustrative).** Non-overlapping 250-delivery-day windows, binomial zone boundaries (95%/hourly convention, not the canonical 99%/250-day Basel mapping), assuming independent hours, an assumption this book's own intraday breach clustering violates. Across the 24 qualifying (variant, side, window) combinations for the two validated variants, 33.3% fall in the yellow zone and 8.3% in the red zone against a nominal ~5% rate under correct independent-hours coverage (source: `data/processed/backtest_coverage.csv`, `basel_n_yellow`/`basel_n_red`/`basel_n_windows` columns at the `overall` subset for `calibrated` and `fhs`, not checked in, reproducible via `scripts/backtest_risk.py`). This is presented as illustrative only: the statistical verdict is carried by Kupiec and Christoffersen above, not by this zone count (Finding 4, Section 7).
+**Basel traffic-light cross-check (illustrative).** Non-overlapping 250-delivery-day windows, binomial zone boundaries (95%/hourly convention, not the canonical 99%/250-day Basel mapping), assuming independent hours, an assumption this book's own intraday breach clustering violates. Across the 24 qualifying (variant, side, window) combinations for the two validated variants, 20.8% fall in the yellow zone and 8.3% in the red zone against a nominal ~5% rate under correct independent-hours coverage (v1.0: 33.3% yellow / 8.3% red; source: `data/processed/backtest_coverage.csv`, `basel_n_yellow`/`basel_n_red`/`basel_n_windows` columns at the `overall` subset for `calibrated` and `fhs`, not checked in, reproducible via `scripts/backtest_risk.py`). This is presented as illustrative only: the statistical verdict is carried by Kupiec and Christoffersen above, not by this zone count (Finding 4, Section 7).
 
 ---
 
 ## 7. Findings & Limitations
 
-Ten findings, ordered by severity. Each carries a one-sentence statement, the verifying evidence with its source, and a classification (Limitation / Accepted / Remediated / Future Work).
+Eleven findings, ordered by severity (Finding 11 added 2026-10-14). Each carries a one-sentence statement, the verifying evidence with its source, and a classification (Limitation / Accepted / Remediated / Future Work).
 
 ### Finding 1: Conditional coverage breaks despite unconditional calibration
-**Finding:** The calibrated risk measure is unconditionally well-calibrated but breaks conditional coverage in 35 of 60 (variant, side, subset) cells, concentrated in the evening ramp and the upper forecast-height buckets.
-**Evidence:** 35/60 cells have a bootstrap breach-rate CI excluding the nominal 0.05 (`results/backtest_coverage.csv`, `breach_rate_ci_excludes_alpha`). Mechanism example: `calibrated`/short in the evening ramp breaches at 0.095 against nominal 0.05 (CI [0.084, 0.106]), close to double the target rate. Scale check: 60 tests at a 5% level would produce ~3 false rejections under a global null; 35 is more than an order of magnitude above that (the 60 cells are not independent tests; subsets nest and overlap, so no formal multiplicity correction is applied, only named). Cross-reference: Finding 10 (regime-adaptive calibration).
+**Finding:** The calibrated risk measure is unconditionally well-calibrated but breaks conditional coverage in 33 of 60 (variant, side, subset) cells (v1.0: 35), concentrated in the evening ramp and the upper forecast-height buckets.
+**Evidence:** 33/60 cells have a bootstrap breach-rate CI excluding the nominal 0.05 (`results/backtest_coverage.csv`, `breach_rate_ci_excludes_alpha`). Mechanism example: `calibrated`/short in the evening ramp breaches at 0.093 against nominal 0.05 (CI [0.082, 0.104]; v1.0: 0.095, CI [0.084, 0.106]), close to double the target rate. Scale check: 60 tests at a 5% level would produce ~3 false rejections under a global null; 33 is more than an order of magnitude above that (the 60 cells are not independent tests; subsets nest and overlap, so no formal multiplicity correction is applied, only named). Cross-reference: Finding 10 (regime-adaptive calibration).
 **Classification: Limitation**.
 
 ### Finding 2: Day-level breach clustering survives the conformal correction
 **Finding:** Breaches cluster into multi-day runs rather than scattering independently across days, and the 90-day conformal correction does not remove this.
-**Evidence:** Day-level Christoffersen `LR_ind` = 53-104 across all four validated (variant, side) combinations at `overall` (`results/backtest_coverage.csv`, `chris_ind_lr_day`), all rejecting independence against the chi-square(1) critical value of 3.84, `calibrated` included. Interpretation: regime persistence (cold snaps, extended scarcity). The pre-registered counter-expectation (that day-level independence would hold after calibration) was falsified by this result, noted here as a process-transparency point, per Section 4.
+**Evidence:** Day-level Christoffersen `LR_ind` = 49-79 (v1.0: 53-104) across all four validated (variant, side) combinations at `overall` (`results/backtest_coverage.csv`, `chris_ind_lr_day`), all rejecting independence against the chi-square(1) critical value of 3.84, `calibrated` included. Interpretation: regime persistence (cold snaps, extended scarcity). The pre-registered counter-expectation (that day-level independence would hold after calibration) was falsified by this result, noted here as a process-transparency point, per Section 4.
 **Classification: Limitation**.
 
 ### Finding 3: Intraday residual heteroskedasticity is not fully absorbed by either calibration variant
 **Finding:** The standardised-residual scale varies materially across the delivery hour, and both `calibrated` and `fhs` show conditional weaknesses in the ramp hours as a result.
-**Evidence:** `std(r)` of the standardised residuals ranges from 0.867 (04:00 local) to 1.294 (19:00 local) across the 24 delivery hours (computed from `data/processed/book_hourly.parquet`'s `r` column grouped by Europe/Berlin local hour, not checked in, reproducible via `scripts/compute_risk.py`). Consequence: conditional breaks in the ramp hours for both variants (Finding 1); `fhs` additionally shows a statistically significant ES severity shortfall in the evening ramp on the short side (`z1` CI fully above 0: [0.055, 0.207], `results/backtest_coverage.csv`). Cross-reference: Finding 10 (a ramp term in the local-scale estimate).
+**Evidence:** `std(r)` of the standardised residuals ranges from 0.868 (05:00 local) to 1.282 (19:00 local) across the 24 delivery hours (v1.0: 0.867 at 04:00, 1.294 at 19:00; computed from `data/processed/book_hourly.parquet`'s `r` column grouped by Europe/Berlin local hour, not checked in, reproducible via `scripts/compute_risk.py`). Consequence: conditional breaks in the ramp hours for both variants (Finding 1); `fhs` additionally shows a statistically significant ES severity shortfall in the evening ramp on the short side (`z1` CI fully above 0: [0.062, 0.201], v1.0: [0.055, 0.207]; `results/backtest_coverage.csv`). Cross-reference: Finding 10 (a ramp term in the local-scale estimate).
 **Classification: Limitation**.
 
 ### Finding 4: Basel traffic-light zone boundaries are too tight for this book (overdispersion)
 **Finding:** The binomial Basel zone boundaries assume independent hours; this book's intraday breach clustering violates that assumption, inflating the breach-count variance beyond what the boundaries expect.
-**Evidence:** 33.3% yellow / 8.3% red across 24 qualifying (variant, side, window) combinations for the validated variants, against a nominal ~5% expectation under true independence (`data/processed/backtest_coverage.csv`, `basel_n_yellow`/`basel_n_red`/`basel_n_windows`, not checked in). Classification rationale: the traffic light is retained as an illustrative cross-check only; the statistical verdict is carried by Kupiec and Christoffersen (Section 6), and day-based zone boundaries that would account for the clustering are deliberately deferred (Finding 10) rather than retrofitted here.
+**Evidence:** 20.8% yellow / 8.3% red (v1.0: 33.3% / 8.3%) across 24 qualifying (variant, side, window) combinations for the validated variants, against a nominal ~5% expectation under true independence (`data/processed/backtest_coverage.csv`, `basel_n_yellow`/`basel_n_red`/`basel_n_windows`, not checked in). Classification rationale: the traffic light is retained as an illustrative cross-check only; the statistical verdict is carried by Kupiec and Christoffersen (Section 6), and day-based zone boundaries that would account for the clustering are deliberately deferred (Finding 10) rather than retrofitted here.
 **Classification: Accepted**.
 
 ### Finding 5: Mild ES over-conservatism of the `calibrated` variant in the unconditional aggregate
 **Finding:** At `overall`, the calibrated variant's Expected Shortfall is mildly over-conservative (realised losses on breach days average somewhat below the predicted ES) on both book sides.
-**Evidence:** `z1` 95% CIs fully below 0 on both sides at `overall`: long [-0.136, -0.078], short [-0.084, -0.018] (`results/risk_headline.csv`). Statistically real (CIs exclude 0) but small in magnitude and on the conservative side, a capital-efficiency cost, not a risk-understatement.
+**Evidence:** `z1` 95% CIs fully below 0 on both sides at `overall`: long [-0.130, -0.075], short [-0.096, -0.029] (v1.0: [-0.136, -0.078] / [-0.084, -0.018]; `results/risk_headline.csv`). Statistically real (CIs exclude 0) but small in magnitude and on the conservative side, a capital-efficiency cost, not a risk-understatement. The short-side CI moved further from 0 than v1.0's did — still the same classification, a slightly stronger version of the same finding.
 **Classification: Accepted**.
 
 ### Finding 6: The crisis macro-regime is a structural stress test for every model
 **Finding:** All four compared models (Naive, Lasso, LightGBM, ARIMAX) show materially worse point accuracy in the 2021-09-01 to 2023-04-01 crisis regime than in their own overall test-period average.
-**Evidence:** Crisis-vs-overall MAE ratio: Naive 1.64x, Lasso 1.69x, LightGBM 1.65x, ARIMAX 1.42x (`../notebooks/04_regime_risk.ipynb`, Section 2, table T1). Classification rationale: this is an application-boundary characteristic of the market period, not a model-specific defect (every model, including the simplest benchmark, degrades comparably); reflected in Section 2's stated application boundaries.
+**Evidence:** Crisis-vs-overall MAE ratio: Naive 1.64x, Lasso 1.91x, LightGBM 1.63x, ARIMAX 1.42x (v1.0: 1.64x / 1.69x / 1.65x / 1.42x; `../notebooks/04_regime_risk.ipynb`, Section 2, table T1). Lasso's ratio grew because the Finding-11 extrapolation incidents both fall inside this exact window. Classification rationale: this is an application-boundary characteristic of the market period, not a model-specific defect (every model, including the simplest benchmark, degrades comparably); reflected in Section 2's stated application boundaries.
 **Classification: Accepted**.
 
 ### Finding 7: Raw quantile intervals massively under-cover; scaled conformal calibration corrects this unconditionally
 **Finding:** Before calibration, using the raw q05/q95 as a nominal 5%/95% risk threshold breached far more often than intended; after calibration, breach rates match the nominal target and the unconditional backtest passes.
-**Evidence:** Before: `raw` breach rate 0.183 (long) / 0.178 (short) against nominal 0.05 (`results/risk_headline.csv`); nested 90% band empirical coverage 0.638 against 0.90 nominal (`data/processed/reliability_bands.csv`, not checked in). Remediation: scaled, one-sided conformal recalibration per quantile level (Section 4). After: breach rates 0.049 (long) / 0.052 (short), Kupiec does not reject at `overall` for either side (`results/risk_headline.csv`). Price of the correction: calibrated bands are 1.67x-2.17x wider than the raw bands, depending on nested-band width (`data/processed/conformal_bands_raw.csv` vs. `conformal_bands_sorted.csv`, not checked in); expressed as a capital-buffer ratio, the implied VaR buffer is 1.53x (long) / 1.76x (short) the size the uncalibrated `raw` threshold would have implied (`buffer_factor` = `mean_var(calibrated) / mean_var(raw)`, `results/risk_headline.csv`). `raw` remains visible throughout the backtest as the counterfactual it is, never presented as a validated risk number.
+**Evidence:** Before: `raw` breach rate 0.180 (long) / 0.173 (short) against nominal 0.05 (v1.0: 0.183 / 0.178; `results/risk_headline.csv`); nested 90% band empirical coverage 0.646 against 0.90 nominal (v1.0: 0.638; `data/processed/reliability_bands.csv`, not checked in). Remediation: scaled, one-sided conformal recalibration per quantile level (Section 4). After: breach rates 0.049 (long) / 0.052 (short), Kupiec does not reject at `overall` for either side (`results/risk_headline.csv`). Price of the correction: calibrated bands are 1.64x-2.11x wider than the raw bands, depending on nested-band width (v1.0: 1.66x-2.17x; `data/processed/conformal_bands_raw.csv` vs. `conformal_bands_sorted.csv`, not checked in); expressed as a capital-buffer ratio, the implied VaR buffer is 1.53x (long) / 1.72x (short) the size the uncalibrated `raw` threshold would have implied (v1.0: 1.53x / 1.76x; `buffer_factor` = `mean_var(calibrated) / mean_var(raw)`, `results/risk_headline.csv`). `raw` remains visible throughout the backtest as the counterfactual it is, never presented as a validated risk number.
 **Classification: Remediated**.
 
 ### Finding 8: Quantile crossing in the calibrated grid
 **Finding:** The per-quantile conformal correction, applied independently at each level, produced a material rate of ordering violations between adjacent quantile levels; a monotone rearrangement step removes this by construction.
-**Evidence:** Before: 31.6% of (day, level) rows show at least one adjacent-level crossing, mean over `data/processed/conformal_diagnostics.csv`'s `crossing_rate` column (not checked in). Remediation: isotonic rearrangement per timestamp (`../src/energy_price_forecast/evaluation/rearrangement.py`). After: 0% by construction (not re-measured empirically, since the isotonic projection guarantees monotonicity exactly; `../notebooks/04_regime_risk.ipynb`, Section 3, table T3), coverage-neutral (per-level empirical coverage unaffected, since the sort is isotonic). The diagnostic crossing rate continues to be reported on the unsorted grid deliberately: a real signal about `Q_alpha` noise across levels, not a cosmetic defect to be hidden by the fix.
+**Evidence:** Before: 32.0% of (day, level) rows show at least one adjacent-level crossing (v1.0: 31.6%), mean over `data/processed/conformal_diagnostics.csv`'s `crossing_rate` column (not checked in). Remediation: isotonic rearrangement per timestamp (`../src/energy_price_forecast/evaluation/rearrangement.py`). After: 0% by construction (not re-measured empirically, since the isotonic projection guarantees monotonicity exactly; `../notebooks/04_regime_risk.ipynb`, Section 3, table T3), coverage-neutral (per-level empirical coverage unaffected, since the sort is isotonic). The diagnostic crossing rate continues to be reported on the unsorted grid deliberately: a real signal about `Q_alpha` noise across levels, not a cosmetic defect to be hidden by the fix.
 **Classification: Remediated**.
 
 ### Finding 9: Kupiec on the raw hourly series is anti-conservative relative to the honest bootstrap
 **Finding:** Testing coverage on the uncorrected hourly breach series over-rejects relative to a test that accounts for intraday and day-to-day dependence; the bootstrap-based verdict is the one this project reports as authoritative.
-**Evidence:** Kupiec rejects 43 of 60 validated cells (`kupiec_pvalue < 0.05`); the month-stratified day-block bootstrap CI rejects 35 of the same 60 (`breach_rate_ci_excludes_alpha`): a strict subset (0 cells rejected by the bootstrap but not by Kupiec). The 8 cells Kupiec rejects that the bootstrap does not: `calibrated`/long/`bucket_50_100`, `calibrated`/long/`forecast_renewable_surplus`, `calibrated`/short/`bucket_50_100`, `calibrated`/short/`bucket_150_250`, `calibrated`/short/`bucket_250_400`, `fhs`/long/`bucket_400_plus`, `fhs`/long/`forecast_renewable_surplus`, `fhs`/short/`bucket_150_250` (`results/backtest_coverage.csv`, cross-tabulated). Remediation: the bootstrap CI is established as the reported verdict; Kupiec continues to be shown alongside it, not in place of it, with the gap explicitly quantified rather than silently resolved in favour of the more convenient test.
+**Evidence:** Kupiec rejects 45 of 60 validated cells (v1.0: 43; `kupiec_pvalue < 0.05`); the month-stratified day-block bootstrap CI rejects 33 of the same 60 (v1.0: 35; `breach_rate_ci_excludes_alpha`): a strict subset (0 cells rejected by the bootstrap but not by Kupiec). The 12 cells Kupiec rejects that the bootstrap does not (v1.0: 8 cells): `calibrated`/long/`bucket_0_50`, `calibrated`/long/`bucket_50_100`, `calibrated`/long/`bucket_400_plus`, `calibrated`/short/`bucket_50_100`, `calibrated`/short/`bucket_150_250`, `fhs`/long/`bucket_100_150`, `fhs`/long/`bucket_400_plus`, `fhs`/long/`forecast_renewable_surplus`, `fhs`/short/`bucket_50_100`, `fhs`/short/`bucket_150_250`, `fhs`/short/`bucket_250_400`, `fhs`/short/`forecast_dunkelflaute` (`results/backtest_coverage.csv`, cross-tabulated). Remediation: the bootstrap CI is established as the reported verdict; Kupiec continues to be shown alongside it, not in place of it, with the gap explicitly quantified rather than silently resolved in favour of the more convenient test.
 **Classification: Remediated**.
 
 ### Finding 10: Deliberately open points
@@ -223,9 +255,15 @@ Ten findings, ordered by severity. Each carries a one-sentence statement, the ve
 - **A standalone 15-minute-resolution model**: the 2025-09-30 resolution break (Section 3) is currently absorbed by resampling, not modelled directly.
 **Classification: Future Work**.
 
+### Finding 11: Lasso's point accuracy degrades sharply under an extreme, now-correctly-filled commodity feature (new, 2026-10-14)
+**Finding:** A Sprint 7.0 data-pipeline bugfix (commodity forward-fill now counts real elapsed hours, not rows, instead of under-counting real elapsed time on a quarter-hourly-dominated merge index) correctly backfills the TTF gas price into hours that were previously `NaN`, including the August 2022 energy-crisis peak (~339 EUR/MWh, a real historical value, not corrupted data). Lasso's `asinh`/`sinh` target transform extrapolates explosively when this out-of-training-range feature value reaches it, producing isolated predictions far outside any plausible price (one hour: 4,478 EUR/MWh against a realised 861 EUR/MWh). Overall MAE moves from 24.23 to 58.17 EUR/MWh (+140%), RMSE from 38.40 to 139.08 (+262%) — Lasso is now worse than the naive benchmark on both metrics.
+**Evidence:** Worst-error hours cluster exactly at 2022-08-29/30 and 2022-03-09 (`data/processed/backtest_lasso.parquet` vs. `outputs/regression_reference_v1.0/data/processed/backtest_lasso.parquet`); `ttf_gas_lag_48h` at the worst hour is `NaN` in v1.0, `339.20` in v1.1 (`data/processed/features.parquet`). LightGBM (tree splits, no linear extrapolation) and ARIMAX (no commodity exogenous regressor in `ARIMAX_EXOG_COLUMNS`) show no comparable effect — both move by low single digits in the same comparison. Confirmed independent of the forward-fill *duration* parameter (4 vs. 14 days): the identical extreme value is backfilled even at the original 96-hour limit once the row-count-vs-wall-clock-hours bug itself is fixed, isolating the cause to the bugfix, not the duration choice. Full accounting: `docs/model_risk_regimes/regression_v1.0_to_v1.1.md`, section 4.3.
+**Classification rationale:** not remediated and not planned to be — hardening `LassoForecaster` against extrapolation (e.g. feature clipping) would be a content change to a benchmark model, out of scope for the pipeline-level bugfix that exposed it; Lasso is a baseline comparison point in this project, not the delivery model, and the delivery model (LightGBM) is unaffected. Owner-reviewed and accepted 2026-10-14.
+**Classification: Accepted**.
+
 ### Scope note on ARIMAX
 
-This Findings catalogue is scoped to the delivery model (the LightGBM quantile pipeline) and the risk-measure chain built on top of it. ARIMAX is a benchmark, not the delivery model; its documented weaknesses (90%-band interval coverage approximately 0.50; systematic post-crisis underestimation, mean signed error -14.36 EUR/MWh) are discussed and classified in the Performance section (5.4) but deliberately do not appear as numbered Findings here. This is a scope decision, not an oversight: the README's "Honest limitations" section, aimed at a 60-90-second recruiter read, surfaces the ARIMAX under-coverage directly as a bullet point for a different audience; this report draws the Findings-vs-benchmark-narrative line more sharply for a 10-15-minute technical read. The two documents remain consistent in substance; only the form differs by audience.
+This Findings catalogue is scoped to the delivery model (the LightGBM quantile pipeline) and the risk-measure chain built on top of it. ARIMAX is a benchmark, not the delivery model; its documented weaknesses (90%-band interval coverage approximately 0.51; systematic post-crisis underestimation, mean signed error -14.19 EUR/MWh) are discussed and classified in the Performance section (5.4) but deliberately do not appear as numbered Findings here. This is a scope decision, not an oversight: the README's "Honest limitations" section, aimed at a 60-90-second recruiter read, surfaces the ARIMAX under-coverage directly as a bullet point for a different audience; this report draws the Findings-vs-benchmark-narrative line more sharply for a 10-15-minute technical read. The two documents remain consistent in substance; only the form differs by audience.
 
 ---
 

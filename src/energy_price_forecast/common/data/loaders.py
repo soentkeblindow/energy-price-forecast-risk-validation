@@ -17,9 +17,33 @@ from energy_price_forecast.common.data.entsoe_client import (
 logger = logging.getLogger(__name__)
 
 _COMMODITY_COLUMNS = ["ttf_gas_eur_per_mwh", "eua_co2_eur_per_t"]
-# 4 days = 96 hours: bridges weekends (2 days) and the longest common holiday gap
-# (Good Friday to Easter Monday = 4 days). Genuine outages ≥ 5 days stay visible as NaN.
-_COMMODITY_FFILL_LIMIT = 4 * 24
+# Originally 4 days = 96 hours (bridges weekends and the longest common holiday
+# gap, Good Friday to Easter Monday). Raised to 14 days (336 hours) to match
+# the live pipeline (sbl-energy-forecast), which measured real gaps up to 5
+# days in the full commodity history and widened the margin further as
+# headroom against a future outage -- a behaviour change, not a bug fix, kept
+# as a parameter here (not hardcoded) so Project 1 can revert to the original
+# 4-day value if the regression report shows this matters for its results.
+_COMMODITY_FFILL_LIMIT_HOURS = 14 * 24
+
+
+def time_limited_ffill(series: pd.Series, *, limit_hours: int) -> pd.Series:
+    """Forward-fill honoring a real wall-clock time limit, not a row count.
+
+    ``Series.ffill(limit=N)`` counts ROWS, which silently means a different
+    real time span depending on the index's own resolution: day_ahead_price
+    (and therefore this merged frame's own index) has been quarter-hourly
+    since 2025-09-30, so a row-count limit tuned for an hourly index covers
+    only a quarter of the intended real time span from that date onward.
+
+    Correct regardless of the index's own resolution: every NaN is filled
+    from the most recent real (non-NaN) value, then reverted to NaN wherever
+    that value's own age exceeds ``limit_hours``.
+    """
+    filled = series.ffill()
+    last_valid_time = series.index.to_series().where(series.notna()).ffill()
+    age = series.index.to_series() - last_valid_time
+    return filled.where(age <= pd.Timedelta(hours=limit_hours))
 
 
 def _log_fetch(name: str, df: pd.DataFrame) -> pd.DataFrame:
@@ -34,6 +58,8 @@ def load_all_data(
     start: pd.Timestamp,
     end: pd.Timestamp,
     area: str = AREA_DE_LU,
+    *,
+    commodity_ffill_limit_hours: int = _COMMODITY_FFILL_LIMIT_HOURS,
 ) -> pd.DataFrame:
     """Load and merge all data sources into a single hourly DataFrame.
 
@@ -42,11 +68,12 @@ def load_all_data(
     column is required: rows where the price is missing are dropped.
 
     Commodity prices (TTF gas, EUA CO2) come at daily granularity and are
-    forward-filled to hourly resolution with a 4-day limit. This bridges
-    weekends and typical holiday gaps (Easter, Christmas) but leaves
-    multi-day outages visible as NaN for downstream data quality analysis.
-    This is the only resampling done by the loader; all other forward-fill
-    or interpolation decisions are deferred to feature engineering (Sprint 2).
+    forward-filled with a real wall-clock time limit (``time_limited_ffill``,
+    not a row count -- see that function). This bridges weekends and typical
+    holiday gaps but leaves multi-day outages visible as NaN for downstream
+    data quality analysis. This is the only resampling done by the loader;
+    all other forward-fill or interpolation decisions are deferred to
+    feature engineering (Sprint 2).
 
     Parameters
     ----------
@@ -57,6 +84,8 @@ def load_all_data(
     area : str, default "DE_LU"
         ENTSO-E area code. Currently only DE_LU is fully supported; other
         areas would require neighbor-list adjustments in entsoe_client.py.
+    commodity_ffill_limit_hours : int, default 336 (14 days)
+        Forward-fill limit for the commodity columns, in real hours.
 
     Returns
     -------
@@ -114,7 +143,7 @@ def load_all_data(
     # All other gaps remain as NaN so EDA can see real data-quality issues.
     for col in _COMMODITY_COLUMNS:
         if col in df.columns:
-            df[col] = df[col].ffill(limit=_COMMODITY_FFILL_LIMIT)
+            df[col] = time_limited_ffill(df[col], limit_hours=commodity_ffill_limit_hours)
 
     # Rows without a target price are unusable for modelling; drop them early
     # so they don't distort predictor gap-visualisation in EDA.
@@ -144,6 +173,8 @@ def build_interim_hourly(
     end: pd.Timestamp,
     path: Path = _INTERIM_PATH,
     area: str = AREA_DE_LU,
+    *,
+    commodity_ffill_limit_hours: int = _COMMODITY_FFILL_LIMIT_HOURS,
 ) -> pd.DataFrame:
     """Fetch raw data, normalise to an hourly grid, and persist as Parquet.
 
@@ -156,7 +187,7 @@ def build_interim_hourly(
     """
     from energy_price_forecast.common.data.normalize import to_hourly
 
-    raw = load_all_data(start, end, area)
+    raw = load_all_data(start, end, area, commodity_ffill_limit_hours=commodity_ffill_limit_hours)
     hourly = to_hourly(raw)
 
     path.parent.mkdir(parents=True, exist_ok=True)

@@ -1,4 +1,6 @@
 import logging
+import os
+import uuid
 from collections.abc import Callable
 from pathlib import Path
 
@@ -26,10 +28,15 @@ def _month_range(start: pd.Timestamp, end: pd.Timestamp) -> list[tuple[int, int]
 
 
 def _month_bounds(year: int, month: int) -> tuple[pd.Timestamp, pd.Timestamp]:
+    # -1 second, not -1 hour: an hour-granularity offset silently truncated the
+    # last 45 minutes of every month once ENTSO-E switched DE_LU day-ahead
+    # prices to 15-minute resolution (2025-09-30) -- a bug invisible on the
+    # pure-hourly era this constant was originally written for. -1 second
+    # reaches the true end of the month regardless of the data's resolution.
     first = pd.Timestamp(year=year, month=month, day=1, tz="UTC")
     next_month = month % 12 + 1
     next_year = year + (1 if month == 12 else 0)
-    last = pd.Timestamp(year=next_year, month=next_month, day=1, tz="UTC") - pd.Timedelta(hours=1)
+    last = pd.Timestamp(year=next_year, month=next_month, day=1, tz="UTC") - pd.Timedelta(seconds=1)
     return first, last
 
 
@@ -40,10 +47,47 @@ def _is_complete_month(year: int, month: int) -> bool:
     return last < pd.Timestamp.now("UTC") - pd.Timedelta(days=1)
 
 
-def _is_sufficiently_complete(df: pd.DataFrame, year: int, month: int) -> bool:
+def _infer_resolution_seconds(df: pd.DataFrame) -> float:
+    # Falls back to hourly when there's not enough spacing information to infer
+    # anything (empty/single-row frame) -- a too-small df fails the completeness
+    # check regardless of what resolution we assume here.
+    if not isinstance(df.index, pd.DatetimeIndex) or len(df.index) < 2:
+        return 3600.0
+    return df.index.to_series().diff().dropna().median().total_seconds()
+
+
+def _is_sufficiently_complete(
+    df: pd.DataFrame,
+    year: int,
+    month: int,
+    *,
+    known_low_resolution_window: tuple[str, str] | None = None,
+) -> bool:
+    # Resolution is inferred from the cached data itself, not hardcoded to
+    # hourly -- day_ahead_price has been 15-minute resolution since the
+    # 2025-09-30 ENTSO-E switch, and a hardcoded hourly expected-count let a
+    # stale, ~4x-too-short quarter-hourly cache file pass this check silently.
     first, last = _month_bounds(year, month)
-    expected_hours = int((last - first).total_seconds() / 3600) + 1
-    return len(df) >= 0.9 * expected_hours
+
+    # known_low_resolution_window (additive, default None): some ENTSO-E
+    # cross-border columns genuinely reported hourly, not quarter-hourly,
+    # during specific past windows (see data/entsoe_resolution_windows.py) --
+    # a real transition month has a MIXED resolution (part hourly, part
+    # quarter-hourly), so the median-inferred resolution above still expects
+    # the finer grid and the row count falls short of 90% of it, even though
+    # nothing is actually missing. Re-fetching never recovers a row ENTSO-E's
+    # own archive doesn't have for that period, so once a month inside a
+    # known window is cached, trust it outright -- a full exemption, not a
+    # relaxed threshold.
+    if known_low_resolution_window is not None:
+        window_start = pd.Timestamp(known_low_resolution_window[0], tz="UTC")
+        window_end = pd.Timestamp(known_low_resolution_window[1], tz="UTC")
+        if first < window_end and last >= window_start:
+            return True
+
+    resolution_seconds = _infer_resolution_seconds(df)
+    expected_periods = int((last - first).total_seconds() / resolution_seconds) + 1
+    return len(df) >= 0.9 * expected_periods
 
 
 def _cache_filepath(cache_dir: Path, file_prefix: str, year: int, month: int) -> Path:
@@ -58,8 +102,39 @@ def _read_parquet(path: Path) -> pd.DataFrame:
 
 
 def _write_parquet(df: pd.DataFrame, path: Path) -> None:
+    """Write df to path atomically: temp file in the same directory, then
+    os.replace (atomic on Windows too). Now that a write can follow a
+    read-merge (see _merge_and_write below), a crash mid-write must not
+    leave a half-written file that looks like a completed month on the next
+    run.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
-    df.to_parquet(path, compression="snappy")
+    tmp_path = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    df.to_parquet(tmp_path, compression="snappy")
+    os.replace(tmp_path, path)
+
+
+def _merge_and_write(fresh: pd.DataFrame, path: Path) -> pd.DataFrame:
+    """Merge fresh into whatever is already on disk at path, then write the
+    result back atomically.
+
+    Existing values win; fresh only fills cells the existing file doesn't
+    have and appends new rows (pandas combine_first). Before this, the open
+    month -- never a cache hit by construction, since _is_complete_month
+    requires a closed month -- was fully REPLACED on every run: a value
+    ENTSO-E revised to NaN was lost, and once the month closed that loss
+    froze permanently. The returned frame is exactly what was written, so a
+    caller can never observe a value the cache does not hold.
+    """
+    if path.exists():
+        existing = _read_parquet(path)
+        merged = existing.combine_first(fresh)
+        if len(existing.columns):
+            merged = merged[existing.columns]
+    else:
+        merged = fresh
+    _write_parquet(merged, path)
+    return merged
 
 
 def cached_fetch(
@@ -68,7 +143,21 @@ def cached_fetch(
     cache_dir: Path,
     file_prefix: str,
     fetch_fn: Callable[[pd.Timestamp, pd.Timestamp], pd.DataFrame],
+    *,
+    use_cache: bool = True,
+    known_low_resolution_window: tuple[str, str] | None = None,
 ) -> pd.DataFrame:
+    """Fetch [start, end] from cache where possible, else from fetch_fn.
+
+    ``use_cache=False`` skips the cache READ for every month in range and
+    always queries the API. The cache WRITE still happens, with fill
+    semantics (see _merge_and_write) -- that is what makes a forced
+    refetch actually persist instead of living only in the returned frame.
+
+    ``known_low_resolution_window`` (additive, default None): threaded
+    straight through to _is_sufficiently_complete -- see that function's
+    own comment.
+    """
     start = _to_utc(start)
     end = _to_utc(end)
 
@@ -77,9 +166,14 @@ def cached_fetch(
         path = _cache_filepath(cache_dir, file_prefix, year, month)
 
         cached_df: pd.DataFrame | None = None
-        if path.exists() and _is_complete_month(year, month):
+        if use_cache and path.exists() and _is_complete_month(year, month):
             candidate = _read_parquet(path)
-            if _is_sufficiently_complete(candidate, year, month):
+            if _is_sufficiently_complete(
+                candidate,
+                year,
+                month,
+                known_low_resolution_window=known_low_resolution_window,
+            ):
                 logger.info("Cache hit: %s", path.name)
                 cached_df = candidate
             else:
@@ -96,7 +190,7 @@ def cached_fetch(
             month_start, month_end = _month_bounds(year, month)
             df = fetch_fn(month_start, month_end)
             if not df.empty:
-                _write_parquet(df, path)
+                df = _merge_and_write(df, path)
             chunks.append(df)
 
     non_empty = [c for c in chunks if not c.empty]

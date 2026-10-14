@@ -22,22 +22,22 @@ All metrics on the common 2021-2025 walk-forward test set (rolling-90-day window
 | Model | MAE (EUR/MWh) | RMSE (EUR/MWh) | WAPE |
 |---|---|---|---|
 | Seasonal Naive | 34.77 | 56.20 | 0.290 |
-| Lasso | 24.23 | 38.40 | 0.202 |
-| ARIMAX | 22.87 | 35.74 | 0.191 |
-| **LightGBM** | **15.40** | **26.59** | **0.129** |
+| Lasso | 58.17 | 139.08 | 0.485 |
+| ARIMAX | 22.68 | 35.55 | 0.189 |
+| **LightGBM** | **14.87** | **25.64** | **0.124** |
 
-- **LightGBM leads by a wide margin:** MAE 15.4 EUR/MWh vs. 22.9-24.2 for ARIMAX/Lasso and 34.8 for the naive benchmark. That amounts to roughly 33% lower error than the best alternative model.
+- **LightGBM leads by a wide margin:** MAE 14.9 EUR/MWh vs. 22.7 for ARIMAX (the best alternative) and 34.8 for the naive benchmark — roughly 34% lower error than the best alternative model. Lasso's 58.2 is not representative of baseline linear performance; see the Lasso finding under Honest limitations below.
 - **That edge is not noise:** a Diebold-Mariano test on daily mean absolute-error loss differentials (Newey-West HAC, Harvey correction) confirms the LightGBM advantage over both benchmarks; an hourly HAC variant yields the same conclusion (see `outputs/results/dm_test.csv`).
 
 | Comparison | Mean loss diff. (EUR/MWh) | DM statistic | p-value | n (days) |
 |---|---|---|---|---|
-| LightGBM vs. Lasso | -8.83 | -14.98 | < 0.001 | 1827 |
-| LightGBM vs. ARIMAX | -7.46 | -13.64 | < 0.001 | 1827 |
+| LightGBM vs. Lasso | -43.27 | -8.24 | < 0.001 | 1827 |
+| LightGBM vs. ARIMAX | -7.80 | -14.55 | < 0.001 | 1827 |
 
 **Calibration and risk:**
 
-- **Raw quantile intervals massively under-cover:** reporting the raw, uncalibrated q05 as a 5% VaR limit breaches in 18.3% (long) / 17.8% (short) of hours, not 5%. Scaled conformal recalibration fixes this: breach rates drop to 4.9% (long) / 5.2% (short), and the implied capital buffer is 1.53x (long) / 1.76x (short) larger than the uncalibrated one would have reported.
-- **The calibrated risk measure passes the unconditional backtest but fails the conditional one:** Kupiec does not reject at `overall`, yet 35 of 60 conditioning cells (hour-of-day phase, forecast-height bucket, forecast-based regime) break coverage under a rigorous bootstrap CI (see the forest plot figure below).
+- **Raw quantile intervals massively under-cover:** reporting the raw, uncalibrated q05 as a 5% VaR limit breaches in 18.0% (long) / 17.3% (short) of hours, not 5%. Scaled conformal recalibration fixes this: breach rates drop to 4.9% (long) / 5.2% (short), and the implied capital buffer is 1.53x (long) / 1.72x (short) larger than the uncalibrated one would have reported.
+- **The calibrated risk measure passes the unconditional backtest but fails the conditional one:** Kupiec does not reject at `overall`, yet 33 of 60 conditioning cells (hour-of-day phase, forecast-height bucket, forecast-based regime) break coverage under a rigorous bootstrap CI (see the forest plot figure below).
 
 ## What makes this honest
 
@@ -56,7 +56,7 @@ Fan chart over a two-week window (2024-12-05 to 2024-12-19) containing the singl
 <img src="outputs/assets/reliability_diagram.png" alt="Reliability diagram" width="420">
 
 
-Nominal vs. empirical one-sided coverage per quantile level. Raw LightGBM sits below the diagonal (under-coverage); the calibrated curve tracks the diagonal closely; ARIMAX (pale reference, 3-level grid only) under-covers more severely: at the 0.95 level, empirical coverage is 62.3% against a 95% nominal target.
+Nominal vs. empirical one-sided coverage per quantile level. Raw LightGBM sits below the diagonal (under-coverage); the calibrated curve tracks the diagonal closely; ARIMAX (pale reference, 3-level grid only) under-covers more severely: at the 0.95 level, empirical coverage is 62.4% against a 95% nominal target.
 
 <img src="outputs/assets/coverage_forest.png" alt="Coverage forest plot" width="600">
 
@@ -109,11 +109,12 @@ make report-assets
 
 ## Honest limitations
 
-- **Conditional coverage breaks in 35 of 60 cells**, concentrated in the evening ramp and the tail forecast-height buckets. The calibration corrects the unconditional scale but not this conditional structure. In the evening ramp, `calibrated`/short alone breaches at 9.5% against a nominal 5% (CI [8.4%, 10.6%]), close to double the target rate in exactly the hours the book is most exposed.
-- **Day-level breach clustering survives the conformal correction.** Christoffersen's day-level independence test rejects independence for every validated (variant, side) combination at `overall` (`LR_ind` 53-104): breaches bunch into multi-day runs (cold snaps, Dunkelflauten), not just isolated hours.
-- **Kupiec on the raw hourly series is anti-conservative.** It rejects 43 of the same 60 cells, more than the bootstrap's 35, because intra-day breaches are correlated and the hourly chi-square test does not know that. The day-block-bootstrapped test is the one this project reports as the headline; Kupiec is shown alongside it, not in place of it.
-- **ARIMAX's quantile intervals under-cover more severely than LightGBM's, even before calibration.** At the 0.95 level, empirical coverage is 62.3% against a 95% nominal target, vs. LightGBM raw's 81.1% at the same level. This is the documented cost of a classical linear-Gaussian interval assumption against a heavy-tailed, regime-switching price series.
+- **Conditional coverage breaks in 33 of 60 cells**, concentrated in the evening ramp and the tail forecast-height buckets. The calibration corrects the unconditional scale but not this conditional structure. In the evening ramp, `calibrated`/short alone breaches at 9.3% against a nominal 5% (CI [8.2%, 10.4%]), close to double the target rate in exactly the hours the book is most exposed.
+- **Day-level breach clustering survives the conformal correction.** Christoffersen's day-level independence test rejects independence for every validated (variant, side) combination at `overall` (`LR_ind` 49-79): breaches bunch into multi-day runs (cold snaps, Dunkelflauten), not just isolated hours.
+- **Kupiec on the raw hourly series is anti-conservative.** It rejects 45 of the same 60 cells, more than the bootstrap's 33, because intra-day breaches are correlated and the hourly chi-square test does not know that. The day-block-bootstrapped test is the one this project reports as the headline; Kupiec is shown alongside it, not in place of it.
+- **ARIMAX's quantile intervals under-cover more severely than LightGBM's, even before calibration.** At the 0.95 level, empirical coverage is 62.4% against a 95% nominal target, vs. LightGBM raw's 81.7% at the same level. This is the documented cost of a classical linear-Gaussian interval assumption against a heavy-tailed, regime-switching price series.
 - **The energy-crisis period (2021/22) is a structural stress test for every model**, not a regime any of them was specifically tuned for; performance there is reported, not excluded.
+- **The Lasso baseline is fragile to an out-of-distribution commodity price.** A data-pipeline fix (forward-filling the daily TTF gas price by real elapsed hours rather than by row count) now correctly carries forward the actual TTF spot price from the August 2022 energy-crisis peak into hours where it was previously `NaN`. That single feature value sits far outside Lasso's training range; its `asinh`/`sinh` target transform extrapolates explosively on it (one affected hour: a 4,478 EUR/MWh prediction against a realised 861 EUR/MWh). LightGBM (tree splits don't extrapolate linearly) and ARIMAX (no commodity exogenous regressor) are unaffected — this is a reported finding about Lasso's extrapolation fragility, not a bug fix applied to Lasso itself; Lasso remains a baseline comparison here, not a candidate model.
 
 ## Future work
 

@@ -16,6 +16,7 @@ import requests
 from entsoe.exceptions import NoMatchingDataError
 from freezegun import freeze_time
 
+from energy_price_forecast.common.data import _entsoe_cache
 from energy_price_forecast.common.data._entsoe_retry import EntsoeFetchError
 from energy_price_forecast.common.data.entsoe_client import (
     _GEN_COLUMNS,
@@ -217,6 +218,129 @@ def test_incomplete_cache_triggers_refetch(client_mock: MagicMock, cache_root: P
 
     client_mock.query_day_ahead_prices.assert_called_once()
     assert len(result) == 744
+
+
+# ---------------------------------------------------------------------------
+# use_cache parameter and fill semantics (adopted from sbl-energy-forecast,
+# sprint 7.0 step 4.2)
+# ---------------------------------------------------------------------------
+
+
+def test_use_cache_default_true_still_reads_cache(client_mock: MagicMock, cache_root: Path) -> None:
+    """Additivity check: a caller that never passes use_cache at all must see
+    byte-for-byte the same cache-hit behavior as before -- test_cache_hit
+    above already proves this implicitly; this makes the guarantee explicit
+    for the new parameter."""
+    _write_month_cache(cache_root, "DE_LU_2022-01.parquet", _make_series("2022-01-01", 744))
+
+    result = fetch_day_ahead_prices(
+        pd.Timestamp("2022-01-01", tz="UTC"),
+        pd.Timestamp("2022-01-31 23:00", tz="UTC"),
+        use_cache=True,
+    )
+
+    client_mock.query_day_ahead_prices.assert_not_called()
+    assert len(result) == 744
+
+
+def test_use_cache_false_skips_the_read_even_for_a_complete_cached_month(
+    client_mock: MagicMock, cache_root: Path
+) -> None:
+    _write_month_cache(cache_root, "DE_LU_2022-01.parquet", _make_series("2022-01-01", 744))
+    client_mock.query_day_ahead_prices.return_value = _make_series("2022-01-01", 744)
+
+    fetch_day_ahead_prices(
+        pd.Timestamp("2022-01-01", tz="UTC"),
+        pd.Timestamp("2022-01-31 23:00", tz="UTC"),
+        use_cache=False,
+    )
+
+    client_mock.query_day_ahead_prices.assert_called_once()
+
+
+def test_fill_semantics_preserves_an_existing_value_revised_to_nan(
+    client_mock: MagicMock, cache_root: Path
+) -> None:
+    """A fresh response with NaN where the cache already has a real value
+    must not erase that value -- the exact shape of the incident that
+    motivated the merge-on-write fix (a fully-replacing write on the open
+    month)."""
+    idx = pd.date_range("2022-01-01", periods=3, freq="h", tz="UTC")
+    existing = pd.Series([10.0, 20.0, 30.0], index=idx)
+    _write_month_cache(cache_root, "DE_LU_2022-01.parquet", existing)
+
+    revised = pd.Series([10.0, float("nan"), 30.0], index=idx)
+    client_mock.query_day_ahead_prices.return_value = revised
+
+    result = fetch_day_ahead_prices(
+        pd.Timestamp("2022-01-01", tz="UTC"),
+        pd.Timestamp("2022-01-01T02:00", tz="UTC"),
+        use_cache=False,
+    )
+
+    assert list(result["day_ahead_price"]) == [10.0, 20.0, 30.0]
+    on_disk = pd.read_parquet(cache_root / "entsoe" / "day_ahead_prices" / "DE_LU_2022-01.parquet")
+    assert list(on_disk["day_ahead_price"]) == [10.0, 20.0, 30.0]
+
+
+def test_fill_semantics_fills_a_gap_and_appends_new_rows(
+    client_mock: MagicMock, cache_root: Path
+) -> None:
+    idx_existing = pd.date_range("2022-01-01", periods=2, freq="h", tz="UTC")
+    existing = pd.Series([10.0, float("nan")], index=idx_existing)  # hour 1 missing
+    _write_month_cache(cache_root, "DE_LU_2022-01.parquet", existing)
+
+    idx_fresh = pd.date_range("2022-01-01", periods=4, freq="h", tz="UTC")  # 2 new hours too
+    fresh = pd.Series([999.0, 20.0, 30.0, 40.0], index=idx_fresh)  # hour 0 would-be overwrite
+    client_mock.query_day_ahead_prices.return_value = fresh
+
+    result = fetch_day_ahead_prices(
+        pd.Timestamp("2022-01-01", tz="UTC"),
+        pd.Timestamp("2022-01-01T03:00", tz="UTC"),
+        use_cache=False,
+    )
+
+    assert list(result["day_ahead_price"]) == [10.0, 20.0, 30.0, 40.0]  # hour 0 NOT overwritten
+
+
+def test_written_file_and_returned_frame_are_identical(
+    client_mock: MagicMock, cache_root: Path
+) -> None:
+    idx = pd.date_range("2022-01-01", periods=2, freq="h", tz="UTC")
+    _write_month_cache(
+        cache_root, "DE_LU_2022-01.parquet", pd.Series([1.0, float("nan")], index=idx)
+    )
+    client_mock.query_day_ahead_prices.return_value = pd.Series([1.0, 2.0], index=idx)
+
+    result = fetch_day_ahead_prices(
+        pd.Timestamp("2022-01-01", tz="UTC"),
+        pd.Timestamp("2022-01-01T01:00", tz="UTC"),
+        use_cache=False,
+    )
+
+    on_disk = pd.read_parquet(cache_root / "entsoe" / "day_ahead_prices" / "DE_LU_2022-01.parquet")
+    pd.testing.assert_frame_equal(result, on_disk)
+
+
+def test_cache_write_is_atomic(tmp_path: Path) -> None:
+    """A crash mid-write must leave the previous file untouched, not a
+    half-written one at the real path."""
+    path = tmp_path / "some_source_2022-01.parquet"
+    idx = pd.date_range("2022-01-01", periods=2, freq="h", tz="UTC")
+    original = pd.DataFrame({"day_ahead_price": [1.0, 2.0]}, index=idx)
+    original.to_parquet(path, compression="snappy")
+
+    with (
+        patch.object(pd.DataFrame, "to_parquet", side_effect=OSError("simulated crash")),
+        pytest.raises(OSError, match="simulated crash"),
+    ):
+        _entsoe_cache._merge_and_write(
+            pd.DataFrame({"day_ahead_price": [3.0, 4.0]}, index=idx), path
+        )
+
+    restored = pd.read_parquet(path)
+    assert list(restored["day_ahead_price"]) == [1.0, 2.0]  # untouched, not half-written
+    assert list(path.parent.glob(".*.tmp")) == []  # no leftover temp file
 
 
 # ---------------------------------------------------------------------------
@@ -749,6 +873,104 @@ def test_cross_border_flows_computes_net_flow(client_mock: MagicMock, cache_root
 
     assert "physical_net_de_to_fr" in result.columns
     assert (result["physical_net_de_to_fr"] == 120.0).all()
+
+
+# ---------------------------------------------------------------------------
+# known_low_resolution_window: cache-hit heuristic exemption for genuine,
+# permanent hourly-vs-quarter-hourly ENTSO-E transition months (adopted from
+# sbl-energy-forecast, sprint 7.0 step 4.2 -- see
+# data/entsoe_resolution_windows.py)
+# ---------------------------------------------------------------------------
+
+
+def _write_border_flow_month_cache(
+    root: Path,
+    cache_subdir: str,
+    area_neighbor: str,
+    col_name: str,
+    filename: str,
+    series: pd.Series,
+) -> None:
+    cache_dir = root / "entsoe" / cache_subdir
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    series.to_frame(col_name).to_parquet(cache_dir / filename, compression="snappy")
+
+
+def test_low_resolution_window_prevents_needless_refetch(
+    client_mock: MagicMock, cache_root: Path
+) -> None:
+    """DE_LU_NL genuinely reported hourly for part of 2025-06 (a known,
+    permanent ENTSO-E resolution transition inside scheduled_net_de_to_nl's
+    window in data/entsoe_resolution_windows.py) -- a cached month with
+    fewer rows than a full quarter-hourly month must not trigger a re-fetch
+    that can never recover rows ENTSO-E's own archive doesn't have for that
+    period. The other five neighbors get a full, ordinary cache so any call
+    to query_scheduled_exchanges below can only come from NL."""
+    full_month = pd.date_range("2025-06-01", "2025-06-30 23:45", freq="15min", tz="UTC")
+    for neighbor in ["FR", "AT", "PL", "CH", "DK_1"]:
+        _write_border_flow_month_cache(
+            cache_root,
+            "scheduled_exchanges",
+            f"DE_LU_{neighbor}",
+            f"scheduled_net_de_to_{neighbor.lower()}",
+            f"DE_LU_{neighbor}_2025-06.parquet",
+            pd.Series(100.0, index=full_month),
+        )
+    # 2094 of 2880 quarter-hours -- an incomplete-looking but genuinely
+    # correct transition-month row count.
+    _write_border_flow_month_cache(
+        cache_root,
+        "scheduled_exchanges",
+        "DE_LU_NL",
+        "scheduled_net_de_to_nl",
+        "DE_LU_NL_2025-06.parquet",
+        pd.Series(100.0, index=full_month[:2094]),
+    )
+
+    with freeze_time("2025-07-05"):
+        fetch_scheduled_exchanges(
+            pd.Timestamp("2025-06-01", tz="UTC"),
+            pd.Timestamp("2025-06-30 23:45", tz="UTC"),
+        )
+
+    client_mock.query_scheduled_exchanges.assert_not_called()
+
+
+def test_low_resolution_window_does_not_exempt_a_column_outside_it(
+    client_mock: MagicMock, cache_root: Path
+) -> None:
+    """Negative control: scheduled_net_de_to_fr has no known_low_resolution_
+    window entry (it stayed quarter-hourly throughout, per that module's own
+    comment) -- an equally incomplete cache file for it must still trigger
+    the ordinary re-fetch, proving the exemption above is genuinely scoped
+    to the specific column/window and not a blanket relaxation."""
+    full_month = pd.date_range("2025-06-01", "2025-06-30 23:45", freq="15min", tz="UTC")
+    for neighbor in ["NL", "AT", "PL", "CH", "DK_1"]:
+        _write_border_flow_month_cache(
+            cache_root,
+            "scheduled_exchanges",
+            f"DE_LU_{neighbor}",
+            f"scheduled_net_de_to_{neighbor.lower()}",
+            f"DE_LU_{neighbor}_2025-06.parquet",
+            pd.Series(100.0, index=full_month),
+        )
+    _write_border_flow_month_cache(
+        cache_root,
+        "scheduled_exchanges",
+        "DE_LU_FR",
+        "scheduled_net_de_to_fr",
+        "DE_LU_FR_2025-06.parquet",
+        pd.Series(100.0, index=full_month[:2094]),
+    )
+    client_mock.query_scheduled_exchanges.return_value = pd.Series(100.0, index=full_month)
+
+    with freeze_time("2025-07-05"):
+        fetch_scheduled_exchanges(
+            pd.Timestamp("2025-06-01", tz="UTC"),
+            pd.Timestamp("2025-06-30 23:45", tz="UTC"),
+        )
+
+    client_mock.query_scheduled_exchanges.assert_called()
 
 
 # ---------------------------------------------------------------------------

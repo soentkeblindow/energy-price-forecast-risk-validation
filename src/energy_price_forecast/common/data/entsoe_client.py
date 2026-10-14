@@ -9,6 +9,10 @@ from entsoe.exceptions import NoMatchingDataError
 from energy_price_forecast.common.config import DATA_RAW, get_entsoe_token
 from energy_price_forecast.common.data._entsoe_cache import cached_fetch
 from energy_price_forecast.common.data._entsoe_retry import call_with_retry
+from energy_price_forecast.common.data.entsoe_resolution_windows import (
+    CROSS_BORDER_FLOWS_LOW_RESOLUTION_WINDOWS,
+    SCHEDULED_EXCHANGES_LOW_RESOLUTION_WINDOWS,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +64,10 @@ _WIND_SOLAR_COLUMNS = [
 
 @functools.cache
 def _get_client() -> EntsoePandasClient:
-    return EntsoePandasClient(api_key=get_entsoe_token())
+    # timeout=30: the library default (None, i.e. no timeout at all) let a
+    # stalled request block indefinitely -- caused a real 6h hang in a live
+    # audit run.
+    return EntsoePandasClient(api_key=get_entsoe_token(), timeout=30)
 
 
 def _get_gen_series(gen_df: pd.DataFrame, source_name: str) -> pd.Series | None:
@@ -86,7 +93,14 @@ def fetch_day_ahead_prices(
     start: pd.Timestamp,
     end: pd.Timestamp,
     area: str = AREA_DE_LU,
+    *,
+    use_cache: bool = True,
 ) -> pd.DataFrame:
+    """``use_cache=False`` skips the cache READ and always queries the API.
+    The cache WRITE still happens, with fill semantics (see
+    _entsoe_cache.cached_fetch) -- that is what makes a forced refetch
+    actually persist instead of living only in the returned frame.
+    """
     cache_dir = DATA_RAW / "entsoe" / "day_ahead_prices"
 
     def fetch_fn(s: pd.Timestamp, e: pd.Timestamp) -> pd.DataFrame:
@@ -98,14 +112,17 @@ def fetch_day_ahead_prices(
             return pd.DataFrame(columns=["day_ahead_price"])
         return series.tz_convert("UTC").rename("day_ahead_price").to_frame()
 
-    return cached_fetch(start, end, cache_dir, area, fetch_fn)
+    return cached_fetch(start, end, cache_dir, area, fetch_fn, use_cache=use_cache)
 
 
 def fetch_load(
     start: pd.Timestamp,
     end: pd.Timestamp,
     area: str = AREA_DE_LU,
+    *,
+    use_cache: bool = True,
 ) -> pd.DataFrame:
+    """See fetch_day_ahead_prices for the ``use_cache`` contract."""
     cache_dir = DATA_RAW / "entsoe" / "load"
     _columns = ["load_actual", "load_forecast_day_ahead"]
 
@@ -149,14 +166,17 @@ def fetch_load(
 
         return pd.concat([actual, forecast], axis=1)
 
-    return cached_fetch(start, end, cache_dir, area, fetch_fn)
+    return cached_fetch(start, end, cache_dir, area, fetch_fn, use_cache=use_cache)
 
 
 def fetch_wind_solar_forecast(
     start: pd.Timestamp,
     end: pd.Timestamp,
     area: str = AREA_DE_LU,
+    *,
+    use_cache: bool = True,
 ) -> pd.DataFrame:
+    """See fetch_day_ahead_prices for the ``use_cache`` contract."""
     cache_dir = DATA_RAW / "entsoe" / "wind_solar"
 
     def fetch_fn(s: pd.Timestamp, e: pd.Timestamp) -> pd.DataFrame:
@@ -184,14 +204,17 @@ def fetch_wind_solar_forecast(
             return pd.DataFrame(columns=_WIND_SOLAR_COLUMNS)
         return pd.concat(parts, axis=1)
 
-    return cached_fetch(start, end, cache_dir, area, fetch_fn)
+    return cached_fetch(start, end, cache_dir, area, fetch_fn, use_cache=use_cache)
 
 
 def fetch_generation_by_type(
     start: pd.Timestamp,
     end: pd.Timestamp,
     area: str = AREA_DE_LU,
+    *,
+    use_cache: bool = True,
 ) -> pd.DataFrame:
+    """See fetch_day_ahead_prices for the ``use_cache`` contract."""
     cache_dir = DATA_RAW / "entsoe" / "generation"
 
     def fetch_fn(s: pd.Timestamp, e: pd.Timestamp) -> pd.DataFrame:
@@ -231,7 +254,7 @@ def fetch_generation_by_type(
             return pd.DataFrame(columns=_GEN_COLUMNS)
         return pd.DataFrame(result)
 
-    return cached_fetch(start, end, cache_dir, area, fetch_fn)
+    return cached_fetch(start, end, cache_dir, area, fetch_fn, use_cache=use_cache)
 
 
 def _build_neighbor_fetch_fn(
@@ -267,12 +290,24 @@ def _fetch_border_flows(
     cache_subdir: str,
     col_prefix: str,
     query_fn: Callable[[str, str, pd.Timestamp, pd.Timestamp], pd.Series],
+    *,
+    use_cache: bool = True,
+    low_resolution_windows: dict[str, tuple[str, str]] | None = None,
 ) -> pd.DataFrame:
     """Shared loop logic for scheduled_exchanges and cross_border_flows.
 
     For each neighbor, calls query_fn in both directions and caches the resulting
     net-flow Series (positive = export from area to neighbor) as a single-column
     Parquet. The six per-neighbor DataFrames are concatenated column-wise.
+
+    ``use_cache`` is threaded through to every per-neighbor cached_fetch call --
+    see fetch_day_ahead_prices for the contract.
+
+    ``low_resolution_windows``: a column -> (start, end) mapping (see
+    data/entsoe_resolution_windows.py). Per neighbor, the matching window (if
+    any) is passed to cached_fetch so its cache-hit check stops needlessly
+    re-fetching a genuinely, permanently lower-resolution month -- see
+    _entsoe_cache.py::_is_sufficiently_complete.
     """
     cache_dir = DATA_RAW / "entsoe" / cache_subdir
     neighbor_frames: list[pd.DataFrame] = []
@@ -281,7 +316,18 @@ def _fetch_border_flows(
         col_name = f"{col_prefix}_de_to_{neighbor.lower()}"
         file_prefix = f"{area}_{neighbor}"
         fetch_fn = _build_neighbor_fetch_fn(area, neighbor, col_name, cache_subdir, query_fn)
-        neighbor_frames.append(cached_fetch(start, end, cache_dir, file_prefix, fetch_fn))
+        window = (low_resolution_windows or {}).get(col_name)
+        neighbor_frames.append(
+            cached_fetch(
+                start,
+                end,
+                cache_dir,
+                file_prefix,
+                fetch_fn,
+                use_cache=use_cache,
+                known_low_resolution_window=window,
+            )
+        )
 
     if not neighbor_frames:
         return pd.DataFrame()
@@ -292,19 +338,45 @@ def fetch_scheduled_exchanges(
     start: pd.Timestamp,
     end: pd.Timestamp,
     area: str = AREA_DE_LU,
+    *,
+    use_cache: bool = True,
 ) -> pd.DataFrame:
+    """See fetch_day_ahead_prices for the ``use_cache`` contract."""
+
     def query_pair(from_a: str, to_a: str, s: pd.Timestamp, e: pd.Timestamp) -> pd.Series:
         return _get_client().query_scheduled_exchanges(from_a, to_a, start=s, end=e, dayahead=True)
 
-    return _fetch_border_flows(start, end, area, "scheduled_exchanges", "scheduled_net", query_pair)
+    return _fetch_border_flows(
+        start,
+        end,
+        area,
+        "scheduled_exchanges",
+        "scheduled_net",
+        query_pair,
+        use_cache=use_cache,
+        low_resolution_windows=SCHEDULED_EXCHANGES_LOW_RESOLUTION_WINDOWS,
+    )
 
 
 def fetch_cross_border_flows(
     start: pd.Timestamp,
     end: pd.Timestamp,
     area: str = AREA_DE_LU,
+    *,
+    use_cache: bool = True,
 ) -> pd.DataFrame:
+    """See fetch_day_ahead_prices for the ``use_cache`` contract."""
+
     def query_pair(from_a: str, to_a: str, s: pd.Timestamp, e: pd.Timestamp) -> pd.Series:
         return _get_client().query_crossborder_flows(from_a, to_a, start=s, end=e)
 
-    return _fetch_border_flows(start, end, area, "cross_border_flows", "physical_net", query_pair)
+    return _fetch_border_flows(
+        start,
+        end,
+        area,
+        "cross_border_flows",
+        "physical_net",
+        query_pair,
+        use_cache=use_cache,
+        low_resolution_windows=CROSS_BORDER_FLOWS_LOW_RESOLUTION_WINDOWS,
+    )
