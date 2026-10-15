@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from ..evaluation.regimes import MACRO_REGIME_COLUMN, REGIME_FLAG_COLUMNS
+from energy_price_forecast.common.evaluation.regimes import MACRO_REGIME_COLUMN, REGIME_FLAG_COLUMNS
 
 # Below this hour count, a regime row is marked low-support in the dashboard
 # table (illustrative only, not dropped) -- roughly one month of hours, the

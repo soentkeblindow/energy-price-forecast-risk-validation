@@ -35,6 +35,7 @@ repos:
           - python-dotenv
           - types-python-dateutil
           - types-requests
+          - types-pytz
           - matplotlib
         args: [--config-file=pyproject.toml]
         # Only run on your source code, not tests or notebooks

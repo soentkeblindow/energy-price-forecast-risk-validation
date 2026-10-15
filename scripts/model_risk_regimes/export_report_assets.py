@@ -25,7 +25,7 @@ import pandas as pd  # noqa: E402
 
 from energy_price_forecast.common.data.loaders import load_interim_hourly  # noqa: E402
 from energy_price_forecast.common.evaluation.config import BacktestConfig  # noqa: E402
-from energy_price_forecast.model_risk_regimes.evaluation.regimes import tag_regimes  # noqa: E402
+from energy_price_forecast.common.evaluation.regimes import tag_regimes  # noqa: E402
 from energy_price_forecast.model_risk_regimes.reporting import (  # noqa: E402
     assets,
     snapshot,

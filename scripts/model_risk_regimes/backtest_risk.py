@@ -26,6 +26,7 @@ from energy_price_forecast.common.evaluation.config import (
     BacktestConfig,
     RegimeConfig,
 )
+from energy_price_forecast.common.evaluation.regimes import tag_regimes
 from energy_price_forecast.common.evaluation.reliability import FORECAST_LEVEL_BUCKETS
 from energy_price_forecast.common.market_time import LOCAL_TZ
 from energy_price_forecast.model_risk_regimes.evaluation.backtest import (
@@ -40,7 +41,6 @@ from energy_price_forecast.model_risk_regimes.evaluation.bootstrap import (
     cell_occupancy,
     stratified_day_block_bootstrap,
 )
-from energy_price_forecast.model_risk_regimes.evaluation.regimes import tag_regimes
 from energy_price_forecast.model_risk_regimes.evaluation.risk import es_ratio_conditional
 
 _SIDES: tuple[str, ...] = ("long", "short")

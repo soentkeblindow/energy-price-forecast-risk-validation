@@ -8,7 +8,7 @@ import pandas as pd
 import pytest
 from matplotlib.figure import Figure
 
-from energy_price_forecast.model_risk_regimes.evaluation.regimes import (
+from energy_price_forecast.common.evaluation.regimes import (
     MACRO_REGIME_COLUMN,
     REGIME_FLAG_COLUMNS,
 )

@@ -14,7 +14,7 @@ from dataclasses import dataclass
 
 import pandas as pd
 
-from ..evaluation.regimes import MACRO_REGIME_COLUMN, REGIME_FLAG_COLUMNS
+from energy_price_forecast.common.evaluation.regimes import MACRO_REGIME_COLUMN, REGIME_FLAG_COLUMNS
 
 SNAPSHOT_FILENAME = "predictions_snapshot.parquet"
 

@@ -11,6 +11,10 @@ import plotly.graph_objects as go
 import pytest
 from matplotlib.figure import Figure
 
+from energy_price_forecast.common.evaluation.regimes import (
+    MACRO_REGIME_COLUMN,
+    REGIME_FLAG_COLUMNS,
+)
 from energy_price_forecast.model_risk_regimes.dashboard.loading import (
     BACKTEST_COVERAGE_FILENAME,
     COVERAGE_SUMMARY_FILENAME,
@@ -31,10 +35,6 @@ from energy_price_forecast.model_risk_regimes.dashboard.plots import (
     forecast_actual_figure,
     regime_mae_bar,
     reliability_curves,
-)
-from energy_price_forecast.model_risk_regimes.evaluation.regimes import (
-    MACRO_REGIME_COLUMN,
-    REGIME_FLAG_COLUMNS,
 )
 from energy_price_forecast.model_risk_regimes.reporting.snapshot import SNAPSHOT_COLUMNS
 

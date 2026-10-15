@@ -2,7 +2,7 @@
 
 DIAGNOSTIC ONLY. This module slices already-computed forecasts and metrics
 by the regime flags from Sprint 4.1
-(``model_risk_regimes.evaluation.regimes``). It never recomputes a forecast,
+(``common.evaluation.regimes``). It never recomputes a forecast,
 never touches ``evaluation.metrics``, and never turns a flag into a model
 input -- it only groups existing results.
 """

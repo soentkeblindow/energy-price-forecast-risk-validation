@@ -4,12 +4,12 @@ import pytest
 
 from energy_price_forecast.common.data.loaders import load_processed_features
 from energy_price_forecast.common.evaluation.config import RegimeConfig
-from energy_price_forecast.common.market_time import LOCAL_TZ
-from energy_price_forecast.model_risk_regimes.evaluation.regimes import (
+from energy_price_forecast.common.evaluation.regimes import (
     MACRO_REGIME_COLUMN,
     REGIME_FLAG_COLUMNS,
     tag_regimes,
 )
+from energy_price_forecast.common.market_time import LOCAL_TZ
 
 # ---------------------------------------------------------------------------
 # Helpers

@@ -6,7 +6,7 @@ import pytest
 
 from energy_price_forecast.common.evaluation.breakdown import breakdown_point, breakdown_quantiles
 from energy_price_forecast.common.evaluation.metrics import summarise, summarise_quantiles
-from energy_price_forecast.model_risk_regimes.evaluation.regimes import (
+from energy_price_forecast.common.evaluation.regimes import (
     MACRO_REGIME_COLUMN,
     REGIME_FLAG_COLUMNS,
 )

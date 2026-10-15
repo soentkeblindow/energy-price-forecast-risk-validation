@@ -14,7 +14,8 @@ from pathlib import Path
 
 import pandas as pd
 
-from ..evaluation.regimes import MACRO_REGIME_COLUMN, REGIME_FLAG_COLUMNS
+from energy_price_forecast.common.evaluation.regimes import MACRO_REGIME_COLUMN, REGIME_FLAG_COLUMNS
+
 from ..reporting.snapshot import SNAPSHOT_COLUMNS, SNAPSHOT_FILENAME
 from ..reporting.tables import (
     BACKTEST_COVERAGE_FILENAME,

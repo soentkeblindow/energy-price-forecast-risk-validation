@@ -13,6 +13,7 @@ from energy_price_forecast.common.data.entsoe_client import (
     fetch_scheduled_exchanges,
     fetch_wind_solar_forecast,
 )
+from energy_price_forecast.common.data.quarterhourly import validate_delivery_day_slot_counts
 
 logger = logging.getLogger(__name__)
 
@@ -249,4 +250,110 @@ def load_processed_features(
         )
     df = pd.read_parquet(path)
     logger.info("loaded %d feature rows from %s", len(df), path)
+    return df
+
+
+# ---------------------------------------------------------------------------
+# Interim layer — native quarter-hourly day-ahead prices
+# ---------------------------------------------------------------------------
+
+_QUARTERHOURLY_PATH = Path("data/interim/quarterhourly_prices.parquet")
+
+
+def load_interim_quarterhourly(path: Path = _QUARTERHOURLY_PATH) -> pd.DataFrame:
+    """Load the native (unresampled) quarter-hourly day-ahead price series.
+
+    Raises FileNotFoundError if the file does not exist (run
+    data.quarterhourly.build_quarterhourly_prices() first). Validates every
+    local delivery day's slot count before returning -- see
+    quarterhourly.validate_delivery_day_slot_counts; a day with a gap raises
+    rather than being silently skipped or interpolated.
+    """
+    if not path.exists():
+        raise FileNotFoundError(
+            f"Quarter-hourly Parquet not found at {path!r}. "
+            "Run data.quarterhourly.build_quarterhourly_prices() to generate it."
+        )
+    df = pd.read_parquet(path)
+    validate_delivery_day_slot_counts(pd.DatetimeIndex(df.index))
+    logger.info("loaded %d quarter-hourly rows from %s", len(df), path)
+    return df
+
+
+# ---------------------------------------------------------------------------
+# Interim layer — raw ECMWF IFS weather artefact
+# ---------------------------------------------------------------------------
+
+_WEATHER_PATH = Path("data/interim/weather_ifs_run00.parquet")
+
+
+def load_interim_weather(path: Path = _WEATHER_PATH) -> pd.DataFrame:
+    """Load the raw weather artefact (scripts/model_renewables/build_weather_artefact.py).
+
+    Raises FileNotFoundError if the file does not exist. Validates the
+    artefact's shape -- MultiIndex level names, column count, dtype -- before
+    returning, rather than passing a structurally wrong frame downstream.
+    Does not re-check the exact column set against
+    weather_grid.expected_columns(): that's already enforced file-by-file
+    when build_weather_artefact.py reads each cached run
+    (data/_weather_cache.py::read_cached_run), so a merged artefact with the
+    wrong shape here means something outside that pipeline touched the file.
+    """
+    if not path.exists():
+        raise FileNotFoundError(
+            f"Weather Parquet not found at {path!r}. "
+            "Run scripts/model_renewables/build_weather_artefact.py to generate it."
+        )
+    df = pd.read_parquet(path)
+
+    index_names = list(df.index.names)
+    if index_names != ["run_init_utc", "valid_time_utc"]:
+        raise ValueError(
+            f"weather artefact at {path!r} has index names {index_names!r}, "
+            "expected ['run_init_utc', 'valid_time_utc']"
+        )
+    if len(df.columns) != 162:
+        raise ValueError(
+            f"weather artefact at {path!r} has {len(df.columns)} columns, expected 162"
+        )
+    bad_dtypes = {col: dtype for col, dtype in df.dtypes.items() if dtype != "float32"}
+    if bad_dtypes:
+        raise ValueError(f"weather artefact at {path!r} has non-float32 columns: {bad_dtypes}")
+
+    logger.info("loaded %d weather rows from %s", len(df), path)
+    return df
+
+
+# ---------------------------------------------------------------------------
+# Processed layer — renewables reconstruction artefact
+# ---------------------------------------------------------------------------
+
+_RENEWABLES_PREDICTIONS_PATH = Path("data/processed/renewables_forecast_rolling365_l2.parquet")
+
+
+def load_renewables_predictions(path: Path = _RENEWABLES_PREDICTIONS_PATH) -> pd.DataFrame:
+    """Load the headline-variant renewables reconstruction artefact
+    (model_renewables/evaluation/renewables_walkforward.run_renewables_backtest's
+    output, written by scripts/model_renewables/train_renewables.py --variant rolling365_l2).
+
+    Raises FileNotFoundError if the file does not exist. Only the headline
+    variant is a valid feature source -- the two comparison variants
+    (expanding_l2, rolling365_quantile) are for the DM-test comparison, not
+    for feeding the price model.
+    """
+    if not path.exists():
+        raise FileNotFoundError(
+            f"Renewables predictions Parquet not found at {path!r}. "
+            "Run scripts/model_renewables/train_renewables.py --variant rolling365_l2 to generate it."
+        )
+    df = pd.read_parquet(path)
+
+    index_names = list(df.index.names)
+    if index_names != ["run_init_utc", "valid_time_utc"]:
+        raise ValueError(
+            f"renewables predictions artefact at {path!r} has index names {index_names!r}, "
+            "expected ['run_init_utc', 'valid_time_utc']"
+        )
+
+    logger.info("loaded %d renewables prediction rows from %s", len(df), path)
     return df

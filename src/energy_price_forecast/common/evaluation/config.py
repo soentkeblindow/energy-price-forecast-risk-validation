@@ -43,10 +43,10 @@ class RegimeConfig:
     post_crisis_start: pd.Timestamp = pd.Timestamp("2023-04-01", tz=LOCAL_TZ)
 
 
-# Column names produced by model_risk_regimes.evaluation.regimes.tag_regimes().
-# Kept here (common) rather than there (model_risk_regimes) because
-# common.evaluation.breakdown needs them and common must not import
-# model_risk_regimes (Sprint 7.0 dependency rule).
+# Column names produced by common.evaluation.regimes.tag_regimes().
+# Kept here rather than in regimes.py because common.evaluation.breakdown
+# needs them too and this avoids a breakdown -> regimes import for just
+# two constants.
 REGIME_FLAG_COLUMNS: tuple[str, ...] = (
     "renewable_scarcity",
     "high_wind",

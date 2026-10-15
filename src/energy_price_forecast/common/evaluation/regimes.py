@@ -7,7 +7,7 @@ after the fact (Sprint 4.2 / 4.4). They MUST NOT be used as model features:
 they encode information unknown at gate-closure (D-1) -- the price-spike
 flag even uses the full per-regime price distribution -- so feeding them to
 the forecaster would be look-ahead leakage. This separation is a contract,
-enforced by ``tests/model_risk_regimes/test_regimes.py`` (which asserts the flag column names
+enforced by ``tests/common/test_regimes.py`` (which asserts the flag column names
 are disjoint from the processed feature matrix).
 """
 
@@ -62,7 +62,7 @@ def tag_regimes(
     encode information unknown at gate-closure (D-1) -- the price-spike flag
     even uses the full per-regime price distribution -- so feeding them to the
     forecaster would be look-ahead leakage. This separation is a contract,
-    enforced by tests/model_risk_regimes/test_regimes.py.
+    enforced by tests/common/test_regimes.py.
 
     Parameters
     ----------

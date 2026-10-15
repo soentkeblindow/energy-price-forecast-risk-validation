@@ -17,6 +17,10 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
+from energy_price_forecast.common.evaluation.regimes import (
+    MACRO_REGIME_COLUMN,
+    REGIME_FLAG_COLUMNS,
+)
 from energy_price_forecast.model_risk_regimes.dashboard.loading import (
     EXPORT_SCRIPT,
     SummaryTables,
@@ -33,10 +37,6 @@ from energy_price_forecast.model_risk_regimes.dashboard.plots import (
     forecast_actual_figure,
     regime_mae_bar,
     reliability_curves,
-)
-from energy_price_forecast.model_risk_regimes.evaluation.regimes import (
-    MACRO_REGIME_COLUMN,
-    REGIME_FLAG_COLUMNS,
 )
 from energy_price_forecast.model_risk_regimes.reporting.assets import (
     plot_coverage_forest,

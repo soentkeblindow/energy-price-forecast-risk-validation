@@ -1,0 +1,322 @@
+"""Installed generation capacity: interpolation, extrapolation, swappable source.
+
+The installed capacity of a production type is needed at two points -- as the
+label denominator during training and as the factor when converting a
+predicted capacity factor back to MW at inference time. Both call sites use
+`installed_capacity_at`, the single place in the repo that resolves an
+installed-capacity figure. Two rules, or two data sources reached through
+different code paths, would not cancel a shared systematic error the way one
+rule and one code path does (train/serve consistency).
+
+Source: `CapacitySource.PUBLIC_REGISTRY` is fixed as the permanent capacity
+source, decided rather than measured -- a source comparison against
+`ENTSOE_14_1_A` was deliberately **not run**. Four reasons:
+
+1. Monthly resolution, against presumably yearly for 14.1.A.
+2. Checked against two independent references (a leave-one-out
+   extrapolation diagnostic's own numbers, largest deviation 1.6%; the
+   Fraunhofer ISE end-of-2025 press release for solar).
+3. No runtime dependency on a platform that was unreachable for more than
+   40 hours in September 2026.
+4. A source switch would mean retraining (it changes the label
+   denominator), not a configuration change -- so the comparison would have
+   been expensive, and its likely outcome was already foreseeable.
+
+`installed_capacity_at` still takes a `source` parameter with two values
+behind one interface -- `CapacitySource.PUBLIC_REGISTRY` (implemented) and
+`CapacitySource.ENTSOE_14_1_A` (a **rejected alternative**, not a pending
+one; raises `NotImplementedError` unconditionally) -- because the interface
+is already built and tested and the two-source equality test
+(`test_both_sources_share_the_same_code_path`) stays valuable. The
+interpolation/extrapolation rule itself does not know or care which source
+supplied the anchors.
+
+PUBLIC_REGISTRY anchor table provenance:
+
+- Source: Energy-Charts API, Fraunhofer-Institut fuer Solare Energiesysteme
+  (ISE) -- a curated aggregation over German capacity register data, not raw
+  Marktstammdatenregister records themselves.
+- URL: https://api.energy-charts.info/installed_power?country=de&time_step=monthly&installation_decommission=false
+- Fetched: 2026-09-01 (the source's own `last_update` field: 2026-08-31T14:49:27 UTC).
+- Definition: monthly, installed power *at the end of* each calendar month
+  (confirmed against the endpoint's own OpenAPI description, not assumed),
+  originally in GW, converted to MW in `data/capacity_anchors_public_registry.csv`.
+  The `solar` series is the source's "Solar DC" column -- module/nameplate DC
+  capacity, matching the plausibility figures this project already cites
+  (e.g. Fraunhofer ISE's own December-2025 press release: "116.8 gigawatts of
+  module capacity (DC)") -- not "Solar AC" (inverter-limited), a different
+  quantity. `wind_onshore` and `wind_offshore` are reported as separate
+  series by the source, never summed.
+- A source switch to ENTSOE_14_1_A is a training-affecting event, not a
+  detail: it changes the label denominator, so it means retraining, and the
+  switch is to be logged when it happens.
+"""
+
+from __future__ import annotations
+
+import logging
+from enum import StrEnum
+from typing import Final
+
+import numpy as np
+import pandas as pd
+
+from energy_price_forecast.common.config import PROJECT_ROOT
+
+logger = logging.getLogger(__name__)
+
+PUBLIC_REGISTRY_ANCHORS_PATH: Final = PROJECT_ROOT / "data" / "capacity_anchors_public_registry.csv"
+
+# The public registry revises its most recent one to two monthly anchors upward
+# as later reports arrive -- the newest anchor is therefore the least
+# reliable one, and it is exactly the one that matters for the extrapolation
+# edge. Discarding it and bridging the gap with the extrapolation rule
+# instead is more honest than trusting a value known to be revised.
+TRAILING_ANCHORS_DISCARDED: Final[int] = 2
+
+# An anchor series with a median spacing below this is treated as monthly
+# (and subject to TRAILING_ANCHORS_DISCARDED); at or above, as yearly.
+_MONTHLY_CADENCE_THRESHOLD_DAYS: Final[float] = 60.0
+
+# Derived from the operating cadence, not fitted to the error diagnostic: a
+# monthly refresh at the start of month M sees a newest raw anchor of M-1;
+# after discarding TRAILING_ANCHORS_DISCARDED (2), the last retained anchor
+# is the end of M-3, so 3 intervals are needed for full coverage of M and a
+# 4th as a buffer against a late refresh. Measured against the leave-one-out
+# diagnostic before being set -- not picked from the error table itself.
+MAX_EXTRAPOLATION_INTERVALS: Final[int] = 4
+
+# Three weeks gives enough room for a refresh that depends on an external
+# publication plus a manual commit to happen inside a normal work rhythm,
+# without warning so early that it becomes background noise.
+_STALENESS_WARNING_DAYS: Final[int] = 21
+
+# Anchor-table validity is logged on INFO once per process, not once per
+# timestamp queried -- installed_capacity_at is called many times per
+# walk-forward run, and per-call logging would drown the signal.
+_VALIDITY_LOGGED_FOR: set[CapacitySource] = set()
+
+_EPOCH: Final = pd.Timestamp("1970-01-01", tz="UTC")
+
+
+class ProductionType(StrEnum):
+    SOLAR = "solar"
+    WIND_ONSHORE = "wind_onshore"
+    WIND_OFFSHORE = "wind_offshore"
+
+
+class CapacitySource(StrEnum):
+    PUBLIC_REGISTRY = "public_registry"
+    ENTSOE_14_1_A = "entsoe_14_1_a"
+
+
+class CapacityExtrapolation(StrEnum):
+    LAST_INCREMENT = "last_increment"
+    MEAN_LAST_THREE_INCREMENTS = "mean_last_three_increments"
+    LINEAR_REGRESSION_LAST_THREE = "linear_regression_last_three"
+
+
+def _validate_anchors(anchors: pd.Series) -> None:
+    if anchors.index.has_duplicates:
+        raise ValueError("capacity anchors contain duplicate timestamps")
+    if not anchors.index.is_monotonic_increasing:
+        raise ValueError("capacity anchors are not monotonically increasing")
+
+
+def _load_public_registry_anchors(production_type: ProductionType) -> pd.Series:
+    table = pd.read_csv(PUBLIC_REGISTRY_ANCHORS_PATH, comment="#")
+    subset = table.loc[table["production_type"] == production_type.value]
+    if subset.empty:
+        raise ValueError(
+            f"no public-registry anchors for production_type={production_type.value!r}"
+        )
+    index = pd.DatetimeIndex(pd.to_datetime(subset["anchor_date"]), tz="UTC")
+    return pd.Series(subset["capacity_mw"].to_numpy(dtype="float64"), index=index).sort_index()
+
+
+def _load_entsoe_anchors(production_type: ProductionType) -> pd.Series:
+    raise NotImplementedError(
+        "CapacitySource.ENTSOE_14_1_A is a rejected alternative, not a pending one -- "
+        "CapacitySource.PUBLIC_REGISTRY is the fixed, permanent capacity source. See "
+        "the module docstring above for the rationale."
+    )
+
+
+_ANCHOR_LOADERS: Final = {
+    CapacitySource.PUBLIC_REGISTRY: _load_public_registry_anchors,
+    CapacitySource.ENTSOE_14_1_A: _load_entsoe_anchors,
+}
+
+
+def _days_since_epoch(index: pd.DatetimeIndex) -> np.ndarray:
+    return np.asarray((index - _EPOCH) / pd.Timedelta(days=1), dtype="float64")
+
+
+def _is_monthly_cadence(anchors: pd.Series) -> bool:
+    gaps_days = np.diff(_days_since_epoch(pd.DatetimeIndex(anchors.index)))
+    return bool(np.median(gaps_days) < _MONTHLY_CADENCE_THRESHOLD_DAYS)
+
+
+def _discard_trailing_anchors(anchors: pd.Series) -> pd.Series:
+    if not _is_monthly_cadence(anchors):
+        return anchors
+    if TRAILING_ANCHORS_DISCARDED == 0:
+        return anchors
+    if len(anchors) <= TRAILING_ANCHORS_DISCARDED:
+        raise ValueError(
+            f"only {len(anchors)} anchors available, cannot discard "
+            f"{TRAILING_ANCHORS_DISCARDED} trailing ones"
+        )
+    return anchors.iloc[:-TRAILING_ANCHORS_DISCARDED]
+
+
+def _extrapolation_rate_per_day(anchors: pd.Series, method: CapacityExtrapolation) -> float:
+    """MW/day rate used to extend the series beyond the last anchor."""
+    days = _days_since_epoch(pd.DatetimeIndex(anchors.index))
+    values = anchors.to_numpy(dtype="float64")
+
+    if method == CapacityExtrapolation.LAST_INCREMENT:
+        if len(anchors) < 2:
+            raise ValueError("LAST_INCREMENT needs at least 2 anchors")
+        return (values[-1] - values[-2]) / (days[-1] - days[-2])
+
+    if method == CapacityExtrapolation.MEAN_LAST_THREE_INCREMENTS:
+        if len(anchors) < 4:
+            raise ValueError("MEAN_LAST_THREE_INCREMENTS needs at least 4 anchors")
+        rates = np.diff(values[-4:]) / np.diff(days[-4:])
+        return float(np.mean(rates))
+
+    if method == CapacityExtrapolation.LINEAR_REGRESSION_LAST_THREE:
+        if len(anchors) < 3:
+            raise ValueError("LINEAR_REGRESSION_LAST_THREE needs at least 3 anchors")
+        slope, _intercept = np.polyfit(days[-3:], values[-3:], deg=1)
+        return float(slope)
+
+    raise ValueError(f"unknown extrapolation method: {method!r}")  # pragma: no cover
+
+
+def anchor_table_valid_until(source: CapacitySource) -> pd.Timestamp:
+    """Last timestamp for which ``installed_capacity_at`` can return a value
+    for ``source`` -- the last retained anchor (after
+    ``TRAILING_ANCHORS_DISCARDED``) plus ``MAX_EXTRAPOLATION_INTERVALS``
+    times the last anchor interval. Computed in exactly this one place;
+    ``installed_capacity_at`` calls it rather than recomputing the boundary.
+
+    All three production types come from one registry pull and therefore
+    share one anchor cadence and last anchor date -- so the boundary is a
+    property of the source, not of a specific production type. That
+    assumption is checked here, explicitly, rather than picked for one
+    production type and trusted silently: if the production types ever
+    disagreed, a per-production-type boundary would be needed instead of a
+    per-source one, and this should fail loudly rather than silently pick
+    one.
+    """
+    boundaries: set[pd.Timestamp] = set()
+    for production_type in ProductionType:
+        anchors = _discard_trailing_anchors(_ANCHOR_LOADERS[source](production_type))
+        anchor_days = _days_since_epoch(pd.DatetimeIndex(anchors.index))
+        last_interval_days = anchor_days[-1] - anchor_days[-2]
+        boundaries.add(
+            anchors.index[-1] + pd.Timedelta(days=last_interval_days * MAX_EXTRAPOLATION_INTERVALS)
+        )
+    if len(boundaries) != 1:
+        raise ValueError(
+            f"production types disagree on the anchor-table validity boundary for "
+            f"source={source.value!r}: {sorted(boundaries)} -- anchor_table_valid_until "
+            "assumes one shared registry vintage per source"
+        )
+    return boundaries.pop()
+
+
+def _log_validity_once(source: CapacitySource, valid_until: pd.Timestamp) -> None:
+    if source in _VALIDITY_LOGGED_FOR:
+        return
+    _VALIDITY_LOGGED_FOR.add(source)
+    days_left = (valid_until.normalize() - pd.Timestamp.now(tz="UTC").normalize()).days
+    logger.info(
+        "capacity anchor table valid until %s (%d days left)",
+        valid_until.date().isoformat(),
+        days_left,
+    )
+
+
+def _warn_if_near_expiry(
+    source: CapacitySource, ts_max: pd.Timestamp, valid_until: pd.Timestamp
+) -> None:
+    if valid_until - ts_max <= pd.Timedelta(days=_STALENESS_WARNING_DAYS):
+        logger.warning(
+            "capacity anchor table for source=%s is only valid until %s -- refresh "
+            "it soon via scripts/model_renewables/build_capacity_anchors.py",
+            source.value,
+            valid_until.date().isoformat(),
+        )
+
+
+def installed_capacity_at(
+    production_type: ProductionType,
+    timestamps: pd.DatetimeIndex,
+    *,
+    source: CapacitySource = CapacitySource.PUBLIC_REGISTRY,
+    method: CapacityExtrapolation = CapacityExtrapolation.LAST_INCREMENT,
+) -> pd.Series:
+    """Installed capacity in MW at each timestamp.
+
+    Linear interpolation between known anchor points; extrapolation beyond
+    the last anchor by the most recently observed increment. Raises if
+    asked for a point beyond ``anchor_table_valid_until(source)`` --
+    silently carrying a stale capacity forward is the error this function
+    exists to prevent. That boundary is computed in exactly one place; this
+    function calls it rather than recomputing it.
+
+    The interpolation rule is independent of the source: both sources feed
+    the same code path, they are not two implementations.
+
+    The same function serves both the label denominator and the conversion
+    of a predicted capacity factor back to MW. Two rules would not cancel;
+    one rule largely does.
+    """
+    if not isinstance(production_type, ProductionType):
+        raise ValueError(f"unknown production_type: {production_type!r}")
+    if source not in _ANCHOR_LOADERS:
+        raise ValueError(f"unknown capacity source: {source!r}")
+    if len(timestamps) == 0:
+        return pd.Series(dtype="float64", index=timestamps)
+    if timestamps.tz is None:
+        raise ValueError("timestamps must be tz-aware")
+
+    anchors = _ANCHOR_LOADERS[source](production_type)
+    _validate_anchors(anchors)
+    anchors = _discard_trailing_anchors(anchors)
+
+    anchor_days = _days_since_epoch(pd.DatetimeIndex(anchors.index))
+    first_anchor = anchors.index[0]
+    last_anchor = anchors.index[-1]
+    max_extrapolation = anchor_table_valid_until(source)
+    _log_validity_once(source, max_extrapolation)
+
+    ts_min, ts_max = timestamps.min(), timestamps.max()
+    if ts_min < first_anchor:
+        raise ValueError(f"timestamp {ts_min} precedes the first known anchor {first_anchor}")
+    if ts_max > max_extrapolation:
+        raise ValueError(
+            f"timestamp {ts_max} is beyond the capacity anchor table's validity "
+            f"boundary {max_extrapolation} for source={source.value!r}; refresh "
+            "the anchor table via scripts/model_renewables/build_capacity_anchors.py"
+        )
+    _warn_if_near_expiry(source, ts_max, max_extrapolation)
+
+    in_range = timestamps <= last_anchor
+    result = np.empty(len(timestamps), dtype="float64")
+
+    if in_range.any():
+        y_anchors = anchors.to_numpy(dtype="float64")
+        query_days = _days_since_epoch(timestamps[in_range])
+        result[in_range] = np.interp(query_days, anchor_days, y_anchors)
+
+    beyond = ~in_range
+    if beyond.any():
+        rate_per_day = _extrapolation_rate_per_day(anchors, method)
+        delta_days = _days_since_epoch(timestamps[beyond]) - anchor_days[-1]
+        result[beyond] = anchors.iloc[-1] + rate_per_day * delta_days
+
+    return pd.Series(result, index=timestamps)
