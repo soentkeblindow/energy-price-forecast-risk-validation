@@ -13,9 +13,8 @@ candidates are run (and reported) only on the pre-2024 period; the winner
 (lowest RMSE there) is then extended, unchanged, over the rest of the test
 period -- no further tuning once the winner is picked.
 
-Also runs the three B sensitivities (spec 5.3, "alle berichten, keine nach
-Testergebnis als Sieger auswählen" -- all three reported, none picked as a
-winner by test result): B-full (srmc_gas_full instead of srmc_gas_only),
+Also runs the three B sensitivities (spec 5.3: all three reported, none
+picked as a winner by test result): B-full (srmc_gas_full instead of srmc_gas_only),
 B-rel (relative-RL bins instead of fixed-MW bins), B-roll (3-year rolling
 beta window instead of expanding). They go through the same metrics/DM-test
 pipeline as A/B/C, with no separate success-criterion check.
