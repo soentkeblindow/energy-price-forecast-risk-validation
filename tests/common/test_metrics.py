@@ -5,6 +5,7 @@ import pandas as pd
 import pytest
 
 from energy_price_forecast.common.evaluation.metrics import (
+    bias,
     interval_coverage,
     interval_width,
     mae,
@@ -61,6 +62,35 @@ def test_mae_nan_on_pred_side_dropped() -> None:
     y_true = _series(10.0, 20.0, 30.0)
     y_pred = _series(8.0, float("nan"), 27.0)
     assert mae(y_true, y_pred) == pytest.approx((2.0 + 3.0) / 2)
+
+
+# ---------------------------------------------------------------------------
+# Bias
+# ---------------------------------------------------------------------------
+
+
+def test_bias_perfect_forecast() -> None:
+    y = _series(10.0, 20.0, 30.0)
+    assert bias(y, y) == pytest.approx(0.0)
+
+
+def test_bias_sign_convention_undershoot_is_positive() -> None:
+    # y_pred systematically below y_true -> undershoot -> positive bias.
+    y_true = _series(10.0, 20.0, 30.0)
+    y_pred = _series(8.0, 17.0, 27.0)
+    assert bias(y_true, y_pred) == pytest.approx((2.0 + 3.0 + 3.0) / 3)
+
+
+def test_bias_sign_convention_overshoot_is_negative() -> None:
+    y_true = _series(10.0, 20.0, 30.0)
+    y_pred = _series(12.0, 23.0, 33.0)
+    assert bias(y_true, y_pred) == pytest.approx((-2.0 - 3.0 - 3.0) / 3)
+
+
+def test_bias_drops_nan_pairs() -> None:
+    y_true = _series(10.0, float("nan"), 30.0)
+    y_pred = _series(8.0, 99.0, 27.0)
+    assert bias(y_true, y_pred) == pytest.approx((2.0 + 3.0) / 2)
 
 
 # ---------------------------------------------------------------------------

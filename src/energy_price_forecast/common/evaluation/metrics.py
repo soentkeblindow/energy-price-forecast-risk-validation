@@ -28,6 +28,18 @@ def rmse(y_true: pd.Series, y_pred: pd.Series) -> float:
     return float(np.sqrt(((t - p) ** 2).mean()))
 
 
+def bias(y_true: pd.Series, y_pred: pd.Series) -> float:
+    """Mean signed error, y_true - y_pred (EUR/MWh).
+
+    Negative means the forecast systematically overshoots the realised
+    price; positive means it undershoots (e.g. the LightGBM
+    cannot-extrapolate-past-training-range failure mode this project has
+    seen with TTF: the forecast clamps below a rising realised price).
+    """
+    t, p = _aligned(y_true, y_pred)
+    return float((t - p).mean())
+
+
 def wape(y_true: pd.Series, y_pred: pd.Series) -> float:
     """Weighted absolute percentage error: sum|e| / sum|y_true|.
 
