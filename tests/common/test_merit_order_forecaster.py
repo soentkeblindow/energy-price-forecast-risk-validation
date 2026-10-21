@@ -89,6 +89,34 @@ def test_beta_estimation_uses_only_data_before_fold_day() -> None:
     assert abs(beta_bin5 - 20.6) > 1.0
 
 
+def test_gas_only_works_on_a_feature_matrix_without_eua_column() -> None:
+    # Regression test (7.3 Teil 1): L1/L2/Oracle feature matrices (core_gas-
+    # derived) never carry eua_co2_lag_48h at all, by design -- gas_only
+    # must not require it.
+    frame, idx = _synthetic_long_history(n_days=300, beta_bin5=0.6, beta_bin7=0.9)
+    y_train, x_train = _fold_x_y(frame, idx, start_day=190, end_day=200)
+    x_train_no_eua = x_train.drop(columns=["eua_co2_lag_48h"])
+
+    model = MeritOrderForecaster(frame, srmc_definition="gas_only", beta_update_cadence_days=30)
+    model.fit(y_train, x_train_no_eua)
+    preds = model.predict(x_train_no_eua.index, history=y_train, x_test=x_train_no_eua)
+    assert preds.notna().all()
+
+
+def test_beta_clamp_max_override_removes_ceiling() -> None:
+    # bin7's true beta (3.0) is well above the default 1.5 ceiling.
+    frame, idx = _synthetic_long_history(n_days=300, beta_bin5=0.6, beta_bin7=3.0)
+    y_train, x_train = _fold_x_y(frame, idx, start_day=190, end_day=200)
+
+    default_model = MeritOrderForecaster(frame, srmc_definition="gas_only")
+    default_model.fit(y_train, x_train)
+    assert default_model._beta_per_bin.loc[7] <= 1.5  # type: ignore[union-attr]
+
+    unclamped_model = MeritOrderForecaster(frame, srmc_definition="gas_only", beta_clamp_max=None)
+    unclamped_model.fit(y_train, x_train)
+    assert abs(unclamped_model._beta_per_bin.loc[7] - 3.0) < 0.1  # type: ignore[union-attr]
+
+
 def test_beta_is_cached_between_cadence_updates() -> None:
     frame, idx = _synthetic_long_history(n_days=300, beta_bin5=0.6, beta_bin7=0.9)
     model = MeritOrderForecaster(frame, srmc_definition="gas_only", beta_update_cadence_days=30)

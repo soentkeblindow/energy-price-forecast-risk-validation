@@ -176,3 +176,37 @@ def run_backtest(
             )
         )
     return pd.concat(records).sort_index()
+
+
+def last_complete_local_day(price: pd.Series) -> pd.Timestamp:
+    """Last local (Europe/Berlin) delivery day with a full count (23/24/25)
+    of non-missing values in ``price`` -- derived from the data, not the
+    clock.
+
+    Introduced for docs/residual_error_decomposition_hourly_spec.md's Teil 0
+    (section 2, point 1: closing the data edge) and reused by Teil 1's ladder
+    to derive the common evaluation window's end.
+    """
+    local_day = pd.DatetimeIndex(price.index).tz_convert(LOCAL_TZ).normalize()
+    valid_counts = price.notna().groupby(local_day).sum()
+    total_counts = price.groupby(local_day).size()
+    complete = valid_counts[(valid_counts == total_counts) & valid_counts.isin([23, 24, 25])]
+    return complete.index.max()
+
+
+def split_complete_delivery_days(preds: pd.DataFrame) -> tuple[pd.DatetimeIndex, pd.DatetimeIndex]:
+    """Split a ``run_backtest`` result's delivery days into complete (23/24/25
+    hours present) and incomplete.
+
+    A reusable form of the "vollstaendiger Tag"-Regel introduced for
+    docs/residual_error_decomposition_hourly_spec.md's Teil 0 (section 2,
+    point 4: "ab jetzt fuer alle Auswertungen in dieser Spec") and reused by
+    Teil 1's ladder -- any evaluation on a ``run_backtest`` frame should
+    exclude partial delivery days rather than silently averaging over them.
+    """
+    counts = preds.groupby("delivery_day").size()
+    complete_mask = counts.isin([23, 24, 25])
+    return (
+        pd.DatetimeIndex(counts.index[complete_mask]),
+        pd.DatetimeIndex(counts.index[~complete_mask]),
+    )

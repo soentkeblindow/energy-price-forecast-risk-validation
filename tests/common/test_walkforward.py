@@ -3,7 +3,12 @@ import pandas as pd
 import pytest
 
 from energy_price_forecast.common.evaluation.metrics import summarise
-from energy_price_forecast.common.evaluation.walkforward import run_backtest, walk_forward_splits
+from energy_price_forecast.common.evaluation.walkforward import (
+    last_complete_local_day,
+    run_backtest,
+    split_complete_delivery_days,
+    walk_forward_splits,
+)
 from energy_price_forecast.model_risk_regimes.models.baseline import SimilarDayNaive
 
 # ---------------------------------------------------------------------------
@@ -299,3 +304,46 @@ def test_e2e_smoke(tmp_path: "Path") -> None:  # type: ignore[name-defined]  # n
 
     runs = mlflow.search_runs(experiment_names=["smoke_test"])
     assert len(runs) == 1, "Expected exactly one MLflow run"
+
+
+def test_last_complete_local_day_ignores_a_trailing_partial_day() -> None:
+    idx = pd.date_range("2024-01-01", periods=24 + 24 + 3, freq="h", tz="UTC")
+    price = pd.Series(1.0, index=idx)  # last day only has 3 of 24 hours
+    assert last_complete_local_day(price) == pd.Timestamp("2024-01-02", tz="Europe/Berlin")
+
+
+def test_last_complete_local_day_ignores_a_day_with_internal_nans() -> None:
+    idx = pd.date_range("2024-01-01", periods=48, freq="h", tz="UTC")
+    price = pd.Series(1.0, index=idx)
+    price.iloc[30] = float("nan")  # one missing hour inside day 2
+    assert last_complete_local_day(price) == pd.Timestamp("2024-01-01", tz="Europe/Berlin")
+
+
+def test_split_complete_delivery_days_separates_full_from_partial() -> None:
+    idx = pd.date_range("2024-01-01", periods=68, freq="h", tz="UTC")
+    day0, day1, day2 = (
+        pd.Timestamp("2024-01-01", tz="UTC"),
+        pd.Timestamp("2024-01-02", tz="UTC"),
+        pd.Timestamp("2024-01-03", tz="UTC"),
+    )
+    preds = pd.DataFrame(
+        {
+            "y_true": 1.0,
+            "y_pred": 1.0,
+            "delivery_day": [day0] * 24 + [day1] * 20 + [day2] * 24,  # day1: partial, only 20h
+        },
+        index=idx,
+    )
+
+    complete, incomplete = split_complete_delivery_days(preds)
+    assert list(complete) == [day0, day2]
+    assert list(incomplete) == [day1]
+
+
+def test_split_complete_delivery_days_accepts_dst_hour_counts() -> None:
+    preds = pd.DataFrame(
+        {"delivery_day": ["2024-01-01"] * 23 + ["2024-01-02"] * 25 + ["2024-01-03"] * 22}
+    )
+    complete, incomplete = split_complete_delivery_days(preds)
+    assert set(complete) == {pd.Timestamp("2024-01-01"), pd.Timestamp("2024-01-02")}
+    assert list(incomplete) == [pd.Timestamp("2024-01-03")]

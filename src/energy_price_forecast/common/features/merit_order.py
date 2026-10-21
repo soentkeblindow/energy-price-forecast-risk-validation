@@ -2,6 +2,11 @@
 (RL) binning shared by the structural measurement (Phase 1) and the variant
 comparison (Phase 2) of
 docs/merit_order_extrapolation_structure_measurement_spec.md.
+
+``residual_load_from_components``/``renewable_share_from_components`` are
+also reused by the error-decomposition ladder (7.3,
+docs/residual_error_decomposition_hourly_spec.md) for its NWP (L2) and
+Oracle (O-RE/O-ALL) rungs.
 """
 
 from __future__ import annotations
@@ -83,6 +88,32 @@ def rl_bin(residual_load: pd.Series) -> pd.Series:
     )
 
 
+def residual_load_from_components(
+    load: pd.Series, wind_onshore: pd.Series, wind_offshore: pd.Series, solar: pd.Series
+) -> pd.Series:
+    """Residual load from its four components: ``load - wind_onshore -
+    wind_offshore - solar``.
+
+    Mirrors ``common.features.fundamentals.build_forecast_fundamentals``'s
+    ``residual_load_forecast`` formula exactly, but as plain arithmetic on
+    whatever Series the caller passes in -- no ``Feature``/``Availability``
+    wrapper (7.3 section 4, point 2: the leakage framework itself is not to
+    be touched). Lets 7.3's L2 (NWP-reconstructed components) and Oracle
+    (actual components) rungs reuse the one formula instead of each
+    reimplementing it.
+    """
+    return load - wind_onshore - wind_offshore - solar
+
+
+def renewable_share_from_components(
+    load: pd.Series, wind_onshore: pd.Series, wind_offshore: pd.Series, solar: pd.Series
+) -> pd.Series:
+    """Renewable share from its four components: ``(wind_onshore +
+    wind_offshore + solar) / load``. See ``residual_load_from_components``.
+    """
+    return (wind_onshore + wind_offshore + solar) / load
+
+
 def rl_relative(residual_load: pd.Series, load: pd.Series) -> pd.Series:
     """Residual load as a fraction of day-ahead load (spec section 2,
     B-rel sensitivity): ``residual_load / load``.
@@ -142,10 +173,16 @@ def smooth_beta_isotonic(
     beta_by_bin: pd.Series,
     *,
     lower: float = BETA_CLAMP_MIN,
-    upper: float = BETA_CLAMP_MAX,
+    upper: float | None = BETA_CLAMP_MAX,
 ) -> pd.Series:
     """Smooth per-bin beta estimates into a non-decreasing sequence over bin
     order, clamped to ``[lower, upper]`` (variant B, spec section 5.3, step 2).
+
+    ``upper=None`` removes the ceiling entirely (7.3 section 3.4's "Gegenprobe
+    ohne obere Grenze"): passed straight through as sklearn's own
+    ``IsotonicRegression(y_max=None)`` sentinel for "unbounded", not emulated
+    via ``float("inf")`` (which would introduce infinity arithmetic into the
+    fit for no reason).
 
     NaN entries (bins with too few observations for a regression) are
     excluded from the isotonic fit itself, but every bin in the input still

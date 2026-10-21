@@ -2,12 +2,15 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from energy_price_forecast.common.features.fundamentals import build_forecast_fundamentals
 from energy_price_forecast.common.features.merit_order import (
     CO2_INTENSITY_EL,
     GAS_EFFICIENCY,
     RL_BIN_EDGES_MW,
     RL_BIN_EDGES_RELATIVE,
     RL_BIN_LABELS,
+    renewable_share_from_components,
+    residual_load_from_components,
     rl_bin,
     rl_bin_relative,
     rl_relative,
@@ -108,6 +111,61 @@ def test_smooth_beta_isotonic_requires_two_valid_points() -> None:
     raw = pd.Series([np.nan, 0.5, np.nan], index=[0, 1, 2])
     with pytest.raises(ValueError, match="at least two"):
         smooth_beta_isotonic(raw)
+
+
+def test_smooth_beta_isotonic_upper_none_means_unbounded() -> None:
+    raw = pd.Series([0.2, 0.5, 2.0, 5.0], index=[0, 1, 2, 3])
+    smoothed = smooth_beta_isotonic(raw, lower=0.0, upper=None)
+    assert smoothed.max() > 1.5
+    assert (smoothed.diff().dropna() >= -1e-12).all()
+
+
+def test_residual_load_from_components_matches_forecast_fundamentals() -> None:
+    idx = pd.date_range("2024-01-01", periods=5, freq="h", tz="UTC")
+    df = pd.DataFrame(
+        {
+            "load_forecast_day_ahead": [100.0, 200.0, 300.0, 400.0, 500.0],
+            "wind_onshore_forecast": [10.0, 20.0, 30.0, 40.0, 50.0],
+            "wind_offshore_forecast": [5.0, 5.0, 5.0, 5.0, 5.0],
+            "solar_forecast": [1.0, 2.0, 3.0, 4.0, 5.0],
+        },
+        index=idx,
+    )
+    fundamentals = {f.name: f.values for f in build_forecast_fundamentals(df, idx)}
+
+    result = residual_load_from_components(
+        df["load_forecast_day_ahead"],
+        df["wind_onshore_forecast"],
+        df["wind_offshore_forecast"],
+        df["solar_forecast"],
+    )
+    pd.testing.assert_series_equal(
+        result, fundamentals["residual_load_forecast"], check_names=False
+    )
+
+
+def test_renewable_share_from_components_matches_forecast_fundamentals() -> None:
+    idx = pd.date_range("2024-01-01", periods=5, freq="h", tz="UTC")
+    df = pd.DataFrame(
+        {
+            "load_forecast_day_ahead": [100.0, 200.0, 300.0, 400.0, 500.0],
+            "wind_onshore_forecast": [10.0, 20.0, 30.0, 40.0, 50.0],
+            "wind_offshore_forecast": [5.0, 5.0, 5.0, 5.0, 5.0],
+            "solar_forecast": [1.0, 2.0, 3.0, 4.0, 5.0],
+        },
+        index=idx,
+    )
+    fundamentals = {f.name: f.values for f in build_forecast_fundamentals(df, idx)}
+
+    result = renewable_share_from_components(
+        df["load_forecast_day_ahead"],
+        df["wind_onshore_forecast"],
+        df["wind_offshore_forecast"],
+        df["solar_forecast"],
+    )
+    pd.testing.assert_series_equal(
+        result, fundamentals["renewable_share_forecast"], check_names=False
+    )
 
 
 def test_rl_relative_divides_by_load() -> None:

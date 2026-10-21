@@ -12,6 +12,7 @@ from typing import Any, Literal
 import pandas as pd
 
 from ..features.merit_order import (
+    BETA_CLAMP_MAX,
     RL_BIN_LABELS,
     rl_bin,
     rl_bin_relative,
@@ -52,6 +53,11 @@ class MeritOrderForecaster:
     sensitivity, spec section 5.3, meant to stay comparable across years as
     renewables build-out shifts the absolute RL distribution).
 
+    ``beta_clamp_max`` overrides the isotonic smoother's upper bound (default
+    1.5, same as Phase 2); pass ``None`` to remove the ceiling entirely (7.3
+    section 3.4's control run -- monotonicity and the floor at 0 are
+    untouched, only the ceiling is affected).
+
     Re-estimated at most once every ``beta_update_cadence_days`` (default 30,
     spec section 5.3 step 1); between updates the last smoothed
     beta-per-bin vector is reused. Crisis-period rows (``is_crisis``) are
@@ -74,6 +80,7 @@ class MeritOrderForecaster:
         rl_measure: RlMeasure = "absolute",
         beta_update_cadence_days: int = 30,
         beta_window_days: int | None = None,  # None = expanding; else rolling N days
+        beta_clamp_max: float | None = BETA_CLAMP_MAX,
         objective: Literal["quantile", "l2"] = "quantile",
         alpha: float | None = None,
         params: dict[str, Any] | None = None,
@@ -91,6 +98,7 @@ class MeritOrderForecaster:
         self._rl_measure = rl_measure
         self._beta_update_cadence_days = beta_update_cadence_days
         self._beta_window_days = beta_window_days
+        self._beta_clamp_max = beta_clamp_max
         self._inner = LGBMForecaster(
             objective=objective,
             alpha=alpha,
@@ -101,9 +109,10 @@ class MeritOrderForecaster:
         self._beta_per_bin: pd.Series | None = None
         self._last_beta_update: pd.Timestamp | None = None
 
-    def _srmc(self, ttf: pd.Series, eua: pd.Series) -> pd.Series:
+    def _srmc(self, ttf: pd.Series, eua: pd.Series | None) -> pd.Series:
         if self._srmc_definition == "gas_only":
             return srmc_gas_only(ttf)
+        assert eua is not None  # gas_full always has eua available, see callers below
         return srmc_gas_full(ttf, eua)
 
     def _bin_and_srmc(self, x: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
@@ -111,7 +120,11 @@ class MeritOrderForecaster:
             bin_ = rl_bin_relative(x["residual_load_forecast"] / x["load_forecast_day_ahead"])
         else:
             bin_ = rl_bin(x["residual_load_forecast"])
-        srmc = self._srmc(x["ttf_gas_lag_48h"], x["eua_co2_lag_48h"])
+        # eua_co2_lag_48h is only read for gas_full: x may be a reduced
+        # feature matrix (core_gas-derived rungs, 7.3) that never carries
+        # EUA at all, by design.
+        eua = x["eua_co2_lag_48h"] if self._srmc_definition == "gas_full" else None
+        srmc = self._srmc(x["ttf_gas_lag_48h"], eua)
         return bin_, srmc
 
     def _bin_pool(self, pool: pd.DataFrame) -> pd.Series:
@@ -163,7 +176,7 @@ class MeritOrderForecaster:
             raw_beta_values[label] = float((x_centered * (y - y.mean())).sum() / denom)
 
         raw_beta = pd.Series(raw_beta_values, dtype=float).reindex(list(RL_BIN_LABELS))
-        self._beta_per_bin = smooth_beta_isotonic(raw_beta)
+        self._beta_per_bin = smooth_beta_isotonic(raw_beta, upper=self._beta_clamp_max)
         self._last_beta_update = day_d_local
 
     def fit(self, y_train: pd.Series, x_train: pd.DataFrame | None = None) -> None:
