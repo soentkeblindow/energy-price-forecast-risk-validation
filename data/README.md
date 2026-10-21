@@ -68,3 +68,13 @@ flipped on load, not in this copy.
   `valid_time_utc` after the merge) -- the overlapping ~2 months the
   restricted run also produced were discarded, used only to give the
   365-day rolling window enough runway.
+
+**Map boundaries (2026-10-21):** `geo/germany_boundaries.geojson` (committed,
+~80 KB) is used only by `scripts/model_renewables/plot_weather_grid.py` for the
+README grid-point map. It is a one-off extract of Natural Earth 1:10m v5.1.2
+(public domain): `ne_10m_admin_0_countries` (all countries, clipped to lon
+4.6-16.2 / lat 46.6-56.0) and `ne_10m_admin_1_states_provinces` (the 16
+German states), simplified with shapely (`simplify(0.012,
+preserve_topology=True)`) and rounded to 3 decimals. Shapely is not a project
+dependency; the extract was made outside the repo, and the plotting script
+itself needs only matplotlib.
