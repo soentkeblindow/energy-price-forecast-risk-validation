@@ -4,6 +4,7 @@ import pytest
 
 from energy_price_forecast.common.evaluation.metrics import summarise
 from energy_price_forecast.common.evaluation.walkforward import (
+    extend_predictions_to_edge,
     last_complete_local_day,
     run_backtest,
     split_complete_delivery_days,
@@ -347,3 +348,72 @@ def test_split_complete_delivery_days_accepts_dst_hour_counts() -> None:
     complete, incomplete = split_complete_delivery_days(preds)
     assert set(complete) == {pd.Timestamp("2024-01-01"), pd.Timestamp("2024-01-02")}
     assert list(incomplete) == [pd.Timestamp("2024-01-03")]
+
+
+def test_extend_predictions_to_edge_appends_missing_folds() -> None:
+    idx = _hourly_utc("2024-01-01", "2024-01-30 23:00")
+    y = _flat_series(idx)
+    model = _SpyModel()
+    all_folds = list(
+        walk_forward_splits(
+            idx, test_start="2024-01-10", test_end="2024-01-20", window="rolling", train_span_days=5
+        )
+    )
+    cached_folds, new_folds = all_folds[:-3], all_folds[-3:]
+    cached_preds = run_backtest(y, model, cached_folds, refit_every=1, x=None)
+    edge = new_folds[-1].delivery_day
+
+    extended = extend_predictions_to_edge(
+        cached_preds, model, pd.DataFrame(index=idx), y, edge, train_span_days=5
+    )
+
+    assert extended["delivery_day"].max() == edge
+    assert len(extended) == len(cached_preds) + sum(len(f.test_index) for f in new_folds)
+
+
+def test_extend_predictions_to_edge_refetches_an_incomplete_trailing_day() -> None:
+    idx = _hourly_utc("2024-01-01", "2024-01-30 23:00")
+    y = _flat_series(idx)
+    model = _SpyModel()
+    all_folds = list(
+        walk_forward_splits(
+            idx, test_start="2024-01-10", test_end="2024-01-20", window="rolling", train_span_days=5
+        )
+    )
+    cached_folds, new_folds = all_folds[:-2], all_folds[-2:]
+    cached_preds = run_backtest(y, model, cached_folds, refit_every=1, x=None)
+    # Truncate the last cached day's hours to simulate a partial trailing day
+    # (e.g. 7.2's long-history cache ending mid-day at the raw data edge).
+    last_day = cached_preds["delivery_day"].max()
+    is_last_day = cached_preds["delivery_day"] == last_day
+    partial = pd.concat([cached_preds.loc[~is_last_day], cached_preds.loc[is_last_day].iloc[:3]])
+
+    edge = new_folds[-1].delivery_day
+    extended = extend_predictions_to_edge(
+        partial, model, pd.DataFrame(index=idx), y, edge, train_span_days=5
+    )
+
+    counts = extended.groupby("delivery_day").size()
+    assert counts.loc[last_day] in (23, 24, 25)  # re-fetched in full, not left stuck at 3
+    assert extended["delivery_day"].max() == edge
+
+
+def test_extend_predictions_to_edge_is_a_noop_when_already_at_edge() -> None:
+    idx = _hourly_utc("2024-01-01", "2024-01-20 23:00")
+    y = _flat_series(idx)
+    model = _SpyModel()
+    folds = list(
+        walk_forward_splits(
+            idx, test_start="2024-01-10", test_end="2024-01-15", window="rolling", train_span_days=5
+        )
+    )
+    preds = run_backtest(y, model, folds, refit_every=1, x=None)
+    edge = preds["delivery_day"].max()
+    fit_count_before = model.fit_count
+
+    extended = extend_predictions_to_edge(
+        preds, model, pd.DataFrame(index=idx), y, edge, train_span_days=5
+    )
+
+    pd.testing.assert_frame_equal(extended, preds)
+    assert model.fit_count == fit_count_before

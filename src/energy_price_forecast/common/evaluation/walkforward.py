@@ -210,3 +210,66 @@ def split_complete_delivery_days(preds: pd.DataFrame) -> tuple[pd.DatetimeIndex,
         pd.DatetimeIndex(counts.index[complete_mask]),
         pd.DatetimeIndex(counts.index[~complete_mask]),
     )
+
+
+def extend_predictions_to_edge(
+    preds: pd.DataFrame,
+    model: Forecaster,
+    x: pd.DataFrame,
+    y: pd.Series,
+    edge: pd.Timestamp,
+    *,
+    train_span_days: int,
+    label: str = "",
+) -> pd.DataFrame:
+    """Append any folds between ``preds``'s last cached delivery day and
+    ``edge`` by re-running the backtest for just those days.
+
+    If the cache's trailing day is itself incomplete (e.g. 7.2's long-history
+    cache ends mid-day, 3 of 24 hours on 2026-10-18 -- the raw data edge at
+    the time that cache was built), it is dropped and re-fetched in full
+    rather than left stuck as a partial-hour day forever (the naive "extend
+    from after the max cached day" approach would never revisit it).
+
+    Not persisted by this function -- a handful of folds is cheap enough to
+    redo on every run, which also keeps the caller's original cache file
+    untouched. Promoted to ``common`` on its second use (7.3 Teil 2's
+    ``run_residual_error_decomposition.py`` and the error-decomposition
+    follow-up's ``export_diagnosis.py``), same reasoning as
+    ``split_complete_delivery_days`` above.
+    """
+    counts = preds.groupby("delivery_day").size()
+    last_cached_day = pd.Timestamp(counts.index.max())
+    if counts.loc[last_cached_day] not in (23, 24, 25):
+        logger.info(
+            "%s: dropping incomplete trailing cached day %s (%d hour(s)) before extending",
+            label,
+            last_cached_day.date(),
+            counts.loc[last_cached_day],
+        )
+        preds = preds.loc[preds["delivery_day"] != last_cached_day]
+        counts = counts.drop(last_cached_day)
+        last_cached_day = pd.Timestamp(counts.index.max())
+    if last_cached_day >= edge:
+        return preds
+    index = pd.DatetimeIndex(x.index)
+    extra_folds = list(
+        walk_forward_splits(
+            index,
+            test_start=(last_cached_day + pd.DateOffset(days=1)).strftime("%Y-%m-%d"),
+            test_end=edge.strftime("%Y-%m-%d"),
+            window="rolling",
+            train_span_days=train_span_days,
+        )
+    )
+    if not extra_folds:
+        return preds
+    logger.info(
+        "%s: extending %d fold(s) from %s to %s (not cached)",
+        label,
+        len(extra_folds),
+        extra_folds[0].delivery_day.date(),
+        extra_folds[-1].delivery_day.date(),
+    )
+    extra_preds = run_backtest(y, model, extra_folds, refit_every=1, x=x)
+    return pd.concat([preds, extra_preds])

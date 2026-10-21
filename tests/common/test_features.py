@@ -384,6 +384,21 @@ def test_build_feature_matrix_expected_columns() -> None:
     assert set(x.columns) == expected
 
 
+def test_build_feature_matrix_has_no_unlagged_same_day_flow_columns() -> None:
+    """Teil B of docs/error_decomposition_followup_spec.md reads the raw,
+    same-day scheduled_net_de_to_*/physical_net_de_to_* columns purely as an
+    ex-post diagnostic (settled in the same market-coupling auction as the
+    price, unknown at gate closure) -- never as model input. Already implied
+    by test_build_feature_matrix_expected_columns's exact-set check above,
+    but stated explicitly here as its own invariant, independent of that
+    set's future contents, per the follow-up spec's own test requirement.
+    """
+    df = _make_full_df_with_lags()
+    x = build_feature_matrix(df)
+    leaked = [c for c in x.columns if c.startswith(("scheduled_net_de_to_", "physical_net_de_to_"))]
+    assert leaked == []
+
+
 def test_rolling_mean_value_correctness() -> None:
     """Test rolling_mean values against manual calculation."""
     idx = pd.date_range("2024-01-01 00:00", periods=48, freq="h", tz="UTC")

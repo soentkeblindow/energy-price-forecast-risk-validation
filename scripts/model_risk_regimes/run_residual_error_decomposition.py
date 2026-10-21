@@ -38,10 +38,8 @@ import pandas as pd
 from energy_price_forecast.common.data.loaders import load_interim_hourly, load_processed_features
 from energy_price_forecast.common.evaluation.metrics import bias, mae, rmse
 from energy_price_forecast.common.evaluation.walkforward import (
-    Forecaster,
+    extend_predictions_to_edge,
     last_complete_local_day,
-    run_backtest,
-    walk_forward_splits,
 )
 from energy_price_forecast.common.features.merit_order import build_merit_order_frame
 from energy_price_forecast.common.market_time import LOCAL_TZ
@@ -92,44 +90,6 @@ def _parse_args() -> argparse.Namespace:
 # --- Point 1: seasonal bias, A/B, full long history --------------------------
 
 
-def _extend_long_history_preds(
-    preds: pd.DataFrame,
-    variant_name: str,
-    model: Forecaster,
-    x: pd.DataFrame,
-    y: pd.Series,
-    edge: pd.Timestamp,
-) -> pd.DataFrame:
-    """Append any folds between ``preds``'s last cached delivery day and
-    ``edge`` by re-running the backtest for just those days (not persisted --
-    a handful of folds is cheap enough to redo on every run).
-    """
-    last_cached_day = pd.Timestamp(preds["delivery_day"].max())
-    if last_cached_day >= edge:
-        return preds
-    index = pd.DatetimeIndex(x.index)
-    extra_folds = list(
-        walk_forward_splits(
-            index,
-            test_start=(last_cached_day + pd.DateOffset(days=1)).strftime("%Y-%m-%d"),
-            test_end=edge.strftime("%Y-%m-%d"),
-            window="rolling",
-            train_span_days=TRAIN_SPAN_DAYS,
-        )
-    )
-    if not extra_folds:
-        return preds
-    logger.info(
-        "variant %s: extending %d fold(s) from %s to %s (not cached)",
-        variant_name,
-        len(extra_folds),
-        extra_folds[0].delivery_day.date(),
-        extra_folds[-1].delivery_day.date(),
-    )
-    extra_preds = run_backtest(y, model, extra_folds, refit_every=1, x=x)
-    return pd.concat([preds, extra_preds])
-
-
 def _monthly_metrics(preds: pd.DataFrame, variant_name: str) -> pd.DataFrame:
     """Bias/RMSE/MAE per (local calendar year, month), one row per cell."""
     local_day = pd.DatetimeIndex(preds["delivery_day"]).tz_convert(LOCAL_TZ)
@@ -166,7 +126,9 @@ def _seasonal_bias_full_history(
     for name, model in models.items():
         cache_path = preds_dir / f"merit_order_preds_{name}.parquet"
         preds = pd.read_parquet(cache_path)
-        preds = _extend_long_history_preds(preds, name, model, x, y, edge)
+        preds = extend_predictions_to_edge(
+            preds, model, x, y, edge, train_span_days=TRAIN_SPAN_DAYS, label=f"variant {name}"
+        )
         tables.append(_monthly_metrics(preds, name))
     return pd.concat(tables, ignore_index=True)
 
