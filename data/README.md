@@ -69,6 +69,24 @@ flipped on load, not in this copy.
   restricted run also produced were discarded, used only to give the
   365-day rolling window enough runway.
 
+**French (FR) day-ahead price, hourly (2026-10-22, Sprint 7 Step 7.5 Hauptteil):**
+`interim/fr_day_ahead_hourly.parquet` -- single column `fr_day_ahead_price`,
+2023-01-01 to the data edge (2026-10-20 at the time it was built), built by
+`scripts/model_risk_regimes/build_fr_day_ahead_hourly.py`
+(`common/data/fr_prices.py::build_fr_day_ahead_hourly`): fetches FR's own
+native-resolution day-ahead price and load (`fetch_day_ahead_prices`/
+`fetch_load`, `area="FR"`) and collapses to hourly with the exact same
+function this repo's own German `day_ahead_price` column uses
+(`common/data/normalize.py::to_hourly_vwap`, weighted by FR's own
+`load_actual`, falling back to `load_forecast_day_ahead`). Regenerable from
+the ENTSO-E cache (`data/raw/entsoe/{day_ahead_prices,load}/FR_*.parquet`,
+gitignored, 46 months each, first live-fetched for this step). Verified:
+FR's own quarter-hour resolution switch lands at the identical instant as
+DE's (`2025-09-30 22:00:00 UTC`, matching
+`common/data/quarterhourly.py::QUARTERHOUR_START`), zero gaps on the
+resulting hourly grid, FR/DE price correlation ~0.77 over the full range --
+see `docs/sprint7_step7_5_log.md` Phase 0 for the full coverage check.
+
 **Map boundaries (2026-10-21):** `geo/germany_boundaries.geojson` (committed,
 ~80 KB) is used only by `scripts/model_renewables/plot_weather_grid.py` for the
 README grid-point map. It is a one-off extract of Natural Earth 1:10m v5.1.2

@@ -30,6 +30,12 @@ repos:
     rev: v1.20.2
     hooks:
       - id: mypy
+        # Invoke via `python -m mypy` rather than the generated mypy.exe
+        # entry-point stub: Windows Smart App Control blocks that stub
+        # (a newly-written, unsigned small executable) in this hook's
+        # isolated pre-commit venv, even though mypy itself runs cleanly
+        # either way -- see docs/sprint7_step7_5_log.md (Hauptteil commit).
+        entry: python -m mypy
         additional_dependencies:
           - pandas-stubs
           - python-dotenv

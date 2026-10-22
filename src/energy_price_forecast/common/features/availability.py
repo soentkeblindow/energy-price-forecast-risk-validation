@@ -77,6 +77,10 @@ def knowledge_time(cls: Availability, value_index: pd.DatetimeIndex) -> pd.Datet
 # Cross-border columns are matched by prefix (variable neighbour suffixes).
 _RAW_AVAILABILITY: dict[str, Availability] = {
     "day_ahead_price": Availability.DA_FIXED,
+    # French day-ahead price (Sprint 7 Step 7.5 Hauptteil): same DA_FIXED
+    # semantics as day_ahead_price -- an auction-clearing result, UTC-midnight
+    # anchored for the same fall-DST reason (see the DA_FIXED branch below).
+    "fr_day_ahead_price": Availability.DA_FIXED,
     "load_forecast_day_ahead": Availability.DA_FORECAST,
     "wind_onshore_forecast": Availability.DA_FORECAST,
     "wind_offshore_forecast": Availability.DA_FORECAST,
