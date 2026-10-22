@@ -13,24 +13,16 @@ import pandas as pd
 
 from ..features.merit_order import (
     BETA_CLAMP_MAX,
-    RL_BIN_LABELS,
+    RlMeasure,
+    SrmcDefinition,
+    estimate_beta_per_bin,
     rl_bin,
     rl_bin_relative,
-    smooth_beta_isotonic,
     srmc_gas_full,
     srmc_gas_only,
 )
-from ..market_time import LOCAL_TZ
+from ..market_time import LOCAL_TZ, month_start_local
 from .lgbm import LGBMForecaster
-
-SrmcDefinition = Literal["gas_only", "gas_full"]
-RlMeasure = Literal["absolute", "relative"]
-
-# Same pragmatic floor as the Phase 1 structural measurement (not HAC-derived
-# here -- this is a point-estimate-only closed-form slope, not a
-# standard-error report -- but kept at the same value so a bin only starts
-# contributing a beta once it has a comparable amount of evidence).
-_MIN_OBS_PER_BIN = 48
 
 
 class MeritOrderForecaster:
@@ -58,18 +50,35 @@ class MeritOrderForecaster:
     section 3.4's control run -- monotonicity and the floor at 0 are
     untouched, only the ceiling is affected).
 
-    Re-estimated at most once every ``beta_update_cadence_days`` (default 30,
-    spec section 5.3 step 1); between updates the last smoothed
-    beta-per-bin vector is reused. Crisis-period rows (``is_crisis``) are
-    always excluded from the beta estimation pool -- decided before Phase 2
-    results were seen (Phase 1 gave no reason to override this with a
-    weighted-inclusion scheme), see
-    docs/merit_order_extrapolation_structure_measurement_log.md.
+    ``beta_update_rule`` picks how beta is re-estimated (Sprint 7 Step 7.5,
+    Teil 0):
 
-    Leakage contract: only long-history rows strictly before the fold's
-    delivery day D enter the beta estimation pool (``_maybe_update_beta``
-    filters on ``< day D's local midnight, converted to UTC``) -- see
-    ``tests/common/test_merit_order_forecaster.py``.
+    - ``"calendar_month"`` (default): the beta used for delivery day D is
+      estimated from long-history rows strictly before ``anchor(D)``, the
+      local midnight of the 1st of D's own calendar month -- *not* before D
+      itself. Re-estimated whenever ``anchor(D)`` changes from the last
+      anchor used. This makes beta a pure function of D's calendar month,
+      independent of which day a given run happens to start on (two runs
+      starting on different days of the same month produce bit-identical
+      beta and predictions for every day they share -- the reproducibility
+      this was introduced for; see
+      ``tests/common/test_merit_order_forecaster.py``).
+    - ``"rolling_30d"``: legacy mode, kept only so 7.2/7.3's already-reported
+      numbers stay explainable. Re-estimated at most once every
+      ``beta_update_cadence_days`` (default 30) counted from whichever fold
+      happened to be first in a given run, with the pool cut off at D
+      itself. **Not reproducible** across runs with different start dates
+      (the exact problem Teil 0 fixes) -- do not use for anything new.
+
+    Crisis-period rows (``is_crisis``) are always excluded from the beta
+    estimation pool under either rule -- decided before Phase 2 results were
+    seen (Phase 1 gave no reason to override this with a weighted-inclusion
+    scheme), see docs/merit_order_extrapolation_structure_measurement_log.md.
+
+    The actual per-bin regression + isotonic smoothing lives in
+    ``common.features.merit_order.estimate_beta_per_bin``, a pure function
+    this class calls with the cutoff each rule computes -- also used
+    directly (bypassing this class) to build a monthly beta reference table.
     """
 
     def __init__(
@@ -78,7 +87,8 @@ class MeritOrderForecaster:
         *,
         srmc_definition: SrmcDefinition = "gas_only",
         rl_measure: RlMeasure = "absolute",
-        beta_update_cadence_days: int = 30,
+        beta_update_rule: Literal["calendar_month", "rolling_30d"] = "calendar_month",
+        beta_update_cadence_days: int = 30,  # only used by beta_update_rule="rolling_30d"
         beta_window_days: int | None = None,  # None = expanding; else rolling N days
         beta_clamp_max: float | None = BETA_CLAMP_MAX,
         objective: Literal["quantile", "l2"] = "quantile",
@@ -96,6 +106,7 @@ class MeritOrderForecaster:
         self._long_history = long_history
         self._srmc_definition = srmc_definition
         self._rl_measure = rl_measure
+        self._beta_update_rule = beta_update_rule
         self._beta_update_cadence_days = beta_update_cadence_days
         self._beta_window_days = beta_window_days
         self._beta_clamp_max = beta_clamp_max
@@ -107,7 +118,10 @@ class MeritOrderForecaster:
             n_jobs=n_jobs,
         )
         self._beta_per_bin: pd.Series | None = None
-        self._last_beta_update: pd.Timestamp | None = None
+        self._last_beta_update: pd.Timestamp | None = (
+            None  # rolling_30d: day_d_local of last update
+        )
+        self._last_anchor_used: pd.Timestamp | None = None  # calendar_month: anchor of last update
 
     def _srmc(self, ttf: pd.Series, eua: pd.Series | None) -> pd.Series:
         if self._srmc_definition == "gas_only":
@@ -127,11 +141,6 @@ class MeritOrderForecaster:
         srmc = self._srmc(x["ttf_gas_lag_48h"], eua)
         return bin_, srmc
 
-    def _bin_pool(self, pool: pd.DataFrame) -> pd.Series:
-        if self._rl_measure == "relative":
-            return rl_bin_relative(pool["residual_load"] / pool["load"])
-        return rl_bin(pool["residual_load"])
-
     def _beta_lookup(self, bin_: pd.Series) -> pd.Series:
         if self._beta_per_bin is None:
             raise RuntimeError("beta_per_bin not yet estimated")
@@ -143,41 +152,30 @@ class MeritOrderForecaster:
         return codes.map(self._beta_per_bin)
 
     def _maybe_update_beta(self, day_d_local: pd.Timestamp) -> None:
-        due = (
-            self._last_beta_update is None
-            or (day_d_local - self._last_beta_update).days >= self._beta_update_cadence_days
+        if self._beta_update_rule == "calendar_month":
+            anchor = month_start_local(day_d_local)
+            if self._last_anchor_used is not None and anchor == self._last_anchor_used:
+                return
+            cutoff_local = anchor
+            self._last_anchor_used = anchor
+        else:
+            due = (
+                self._last_beta_update is None
+                or (day_d_local - self._last_beta_update).days >= self._beta_update_cadence_days
+            )
+            if not due:
+                return
+            cutoff_local = day_d_local
+            self._last_beta_update = day_d_local
+
+        self._beta_per_bin = estimate_beta_per_bin(
+            self._long_history,
+            cutoff_local,
+            srmc_definition=self._srmc_definition,
+            rl_measure=self._rl_measure,
+            window_days=self._beta_window_days,
+            clamp_max=self._beta_clamp_max,
         )
-        if not due:
-            return
-
-        cutoff_utc = day_d_local.tz_convert("UTC")
-        pool = self._long_history.loc[self._long_history.index < cutoff_utc]
-        if self._beta_window_days is not None:
-            window_start_local = day_d_local - pd.DateOffset(days=self._beta_window_days)
-            pool = pool.loc[pool.index >= window_start_local.tz_convert("UTC")]
-        pool = pool.loc[~pool["is_crisis"]]
-
-        bin_pool = self._bin_pool(pool)
-        srmc_pool = self._srmc(pool["ttf_lag"], pool["eua_lag"])
-        valid = pool["price"].notna() & srmc_pool.notna() & bin_pool.notna()
-
-        raw_beta_values: dict[int, float] = {}
-        for label in RL_BIN_LABELS:
-            cell_mask = valid & (bin_pool == label)
-            n = int(cell_mask.sum())
-            if n < _MIN_OBS_PER_BIN:
-                continue
-            y = pool.loc[cell_mask, "price"].to_numpy()
-            x = srmc_pool.loc[cell_mask].to_numpy()
-            x_centered = x - x.mean()
-            denom = float((x_centered**2).sum())
-            if denom <= 0:
-                continue
-            raw_beta_values[label] = float((x_centered * (y - y.mean())).sum() / denom)
-
-        raw_beta = pd.Series(raw_beta_values, dtype=float).reindex(list(RL_BIN_LABELS))
-        self._beta_per_bin = smooth_beta_isotonic(raw_beta, upper=self._beta_clamp_max)
-        self._last_beta_update = day_d_local
 
     def fit(self, y_train: pd.Series, x_train: pd.DataFrame | None = None) -> None:
         if x_train is None:

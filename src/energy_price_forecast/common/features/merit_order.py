@@ -11,6 +11,8 @@ Oracle (O-RE/O-ALL) rungs.
 
 from __future__ import annotations
 
+from typing import Literal
+
 import numpy as np
 import pandas as pd
 from sklearn.isotonic import IsotonicRegression
@@ -18,6 +20,9 @@ from sklearn.isotonic import IsotonicRegression
 from ..market_time import LOCAL_TZ
 from .config import FeatureConfig
 from .fundamentals import build_commodity_features, build_forecast_fundamentals
+
+SrmcDefinition = Literal["gas_only", "gas_full"]
+RlMeasure = Literal["absolute", "relative"]
 
 # Clean Spark Spread market convention (UK/ICE) for a gas-fired plant's
 # short-run marginal cost. Physical cross-check: 56.6 t CO2/TJ (EU ETS standard
@@ -198,6 +203,112 @@ def smooth_beta_isotonic(
     iso.fit(bins[valid], values[valid])
     smoothed = iso.predict(bins)
     return pd.Series(smoothed, index=beta_by_bin.index)
+
+
+# Same pragmatic floor as the Phase 1 structural measurement (not HAC-derived
+# here -- this is a point-estimate-only closed-form slope, not a
+# standard-error report -- but kept at the same value so a bin only starts
+# contributing a beta once it has a comparable amount of evidence).
+_MIN_OBS_PER_BIN = 48
+
+
+def _srmc_for_pool(srmc_definition: SrmcDefinition, ttf: pd.Series, eua: pd.Series) -> pd.Series:
+    if srmc_definition == "gas_only":
+        return srmc_gas_only(ttf)
+    return srmc_gas_full(ttf, eua)
+
+
+def _bin_pool(rl_measure: RlMeasure, pool: pd.DataFrame) -> pd.Series:
+    if rl_measure == "relative":
+        return rl_bin_relative(pool["residual_load"] / pool["load"])
+    return rl_bin(pool["residual_load"])
+
+
+def raw_beta_per_bin(
+    long_history: pd.DataFrame,
+    cutoff_local: pd.Timestamp,
+    *,
+    srmc_definition: SrmcDefinition,
+    rl_measure: RlMeasure,
+    window_days: int | None,
+) -> pd.DataFrame:
+    """Per-bin closed-form OLS slope of price on SRMC (variant B's beta(RL)),
+    estimated from ``long_history`` rows strictly before ``cutoff_local``
+    (and, if ``window_days`` is given, no earlier than
+    ``cutoff_local - window_days``), crisis-period rows always excluded.
+
+    Returns a frame indexed by ``RL_BIN_LABELS`` with columns ``beta_raw``
+    (NaN where the bin has fewer than ``_MIN_OBS_PER_BIN`` valid observations
+    or a degenerate SRMC spread) and ``n`` (valid observation count, before
+    the ``_MIN_OBS_PER_BIN`` floor).
+
+    Leakage contract: it is the caller's job to pick ``cutoff_local`` so that
+    only data known before whatever it will be used for enters the pool --
+    see ``merit_order_forecaster.MeritOrderForecaster``'s two update rules.
+
+    Required ``long_history`` columns: ``price``, ``residual_load``,
+    ``ttf_lag``, ``eua_lag``, ``is_crisis``, plus ``load`` when
+    ``rl_measure="relative"``.
+    """
+    required = {"price", "residual_load", "ttf_lag", "eua_lag", "is_crisis"}
+    if rl_measure == "relative":
+        required = required | {"load"}
+    missing = required - set(long_history.columns)
+    if missing:
+        raise ValueError(f"long_history is missing columns: {sorted(missing)}")
+
+    cutoff_utc = cutoff_local.tz_convert("UTC")
+    pool = long_history.loc[long_history.index < cutoff_utc]
+    if window_days is not None:
+        window_start_local = cutoff_local - pd.DateOffset(days=window_days)
+        pool = pool.loc[pool.index >= window_start_local.tz_convert("UTC")]
+    pool = pool.loc[~pool["is_crisis"]]
+
+    bin_pool = _bin_pool(rl_measure, pool)
+    srmc_pool = _srmc_for_pool(srmc_definition, pool["ttf_lag"], pool["eua_lag"])
+    valid = pool["price"].notna() & srmc_pool.notna() & bin_pool.notna()
+
+    rows: dict[int, dict[str, float]] = {}
+    for label in RL_BIN_LABELS:
+        cell_mask = valid & (bin_pool == label)
+        n = int(cell_mask.sum())
+        if n < _MIN_OBS_PER_BIN:
+            rows[label] = {"beta_raw": float("nan"), "n": n}
+            continue
+        y = pool.loc[cell_mask, "price"].to_numpy()
+        x = srmc_pool.loc[cell_mask].to_numpy()
+        x_centered = x - x.mean()
+        denom = float((x_centered**2).sum())
+        if denom <= 0:
+            rows[label] = {"beta_raw": float("nan"), "n": n}
+            continue
+        beta = float((x_centered * (y - y.mean())).sum() / denom)
+        rows[label] = {"beta_raw": beta, "n": n}
+
+    return pd.DataFrame.from_dict(rows, orient="index").reindex(list(RL_BIN_LABELS))
+
+
+def estimate_beta_per_bin(
+    long_history: pd.DataFrame,
+    cutoff_local: pd.Timestamp,
+    *,
+    srmc_definition: SrmcDefinition,
+    rl_measure: RlMeasure,
+    window_days: int | None,
+    clamp_max: float | None,
+) -> pd.Series:
+    """Isotonic-smoothed beta(RL) (spec section 5.3, step 2), built on
+    ``raw_beta_per_bin``'s per-bin closed-form regression. See that
+    function's docstring for the leakage contract and required columns.
+    """
+    raw = raw_beta_per_bin(
+        long_history,
+        cutoff_local,
+        srmc_definition=srmc_definition,
+        rl_measure=rl_measure,
+        window_days=window_days,
+    )
+    return smooth_beta_isotonic(raw["beta_raw"], upper=clamp_max)
 
 
 def build_merit_order_frame(

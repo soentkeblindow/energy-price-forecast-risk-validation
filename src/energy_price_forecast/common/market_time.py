@@ -25,6 +25,19 @@ def gate_closure_for_index(index: pd.DatetimeIndex) -> pd.DatetimeIndex:
     return (prev_local_day + pd.Timedelta(hours=GATE_CLOSURE_LOCAL_HOUR)).tz_convert("UTC")
 
 
+def month_start_local(local_day: pd.Timestamp) -> pd.Timestamp:
+    """Local (Europe/Berlin) midnight of the 1st of ``local_day``'s calendar
+    month.
+
+    Built from the plain year/month parts, not by subtracting a
+    ``Timedelta``/chaining ``DateOffset`` off ``local_day`` itself -- same
+    DST-safe construction as ``local_day_bounds``. Needed because a tz-aware
+    ``Timestamp.replace(day=1)`` would keep ``local_day``'s UTC offset even
+    when the 1st falls on the other side of a DST transition.
+    """
+    return pd.Timestamp(year=local_day.year, month=local_day.month, day=1, tz=LOCAL_TZ)
+
+
 def local_day_bounds(date: dt.date) -> tuple[pd.Timestamp, pd.Timestamp]:
     """Local midnight of date and of the following day (end exclusive)."""
     start = pd.Timestamp(date, tz=LOCAL_TZ)

@@ -22,6 +22,7 @@ from energy_price_forecast.common.market_time import (
     expected_timestamp_count,
     local_day_bounds,
     local_window_bounds,
+    month_start_local,
 )
 
 # ---------------------------------------------------------------------------
@@ -94,6 +95,47 @@ def test_local_window_bounds_90_days_across_dst_lands_on_local_midnight() -> Non
     naive_start = end - pd.Timedelta(days=90)
     assert naive_start != start
     assert naive_start.isoformat() == "2026-08-03T01:00:00+02:00"  # off by 1h, not local midnight
+
+
+# ---------------------------------------------------------------------------
+# month_start_local (Sprint 7 Step 7.5, Teil 0: beta re-estimation anchor)
+# ---------------------------------------------------------------------------
+
+
+def test_month_start_local_normal_month() -> None:
+    anchor = month_start_local(pd.Timestamp("2026-08-20", tz="Europe/Berlin"))
+    assert anchor.isoformat() == "2026-08-01T00:00:00+02:00"
+
+
+def test_month_start_local_same_for_every_day_in_month() -> None:
+    first = month_start_local(pd.Timestamp("2026-10-01", tz="Europe/Berlin"))
+    mid = month_start_local(pd.Timestamp("2026-10-17", tz="Europe/Berlin"))
+    last = month_start_local(pd.Timestamp("2026-10-31", tz="Europe/Berlin"))
+    assert first == mid == last
+
+
+def test_month_start_local_across_fall_back_dst() -> None:
+    # The fall-back transition (2026-10-25) falls *inside* October, not on a
+    # month boundary: D=2026-10-28 is already CET (+01:00), but its own
+    # month's anchor (2026-10-01) is still CEST (+02:00) -- the anchor's
+    # offset must reflect the 1st's own position, not D's.
+    d = pd.Timestamp("2026-10-28", tz="Europe/Berlin")
+    assert d.isoformat() == "2026-10-28T00:00:00+01:00"
+    anchor = month_start_local(d)
+    assert anchor.isoformat() == "2026-10-01T00:00:00+02:00"
+    assert anchor.tz_convert("UTC").isoformat() == "2026-09-30T22:00:00+00:00"
+
+
+def test_month_start_local_anchor_offset_differs_from_days_own_offset_across_spring_forward() -> (
+    None
+):
+    # D=2026-03-30 is CEST (+02:00, after the 2026-03-29 spring-forward); its
+    # month anchor (2026-03-01) is still CET (+01:00) -- confirms the anchor
+    # is computed from its own calendar position, not by reusing D's offset
+    # (which a tz-aware Timestamp.replace(day=1) would do).
+    d = pd.Timestamp("2026-03-30", tz="Europe/Berlin")
+    anchor = month_start_local(d)
+    assert anchor.isoformat() == "2026-03-01T00:00:00+01:00"
 
 
 # ---------------------------------------------------------------------------

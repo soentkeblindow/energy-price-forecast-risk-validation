@@ -4,11 +4,14 @@ import pytest
 
 from energy_price_forecast.common.features.fundamentals import build_forecast_fundamentals
 from energy_price_forecast.common.features.merit_order import (
+    BETA_CLAMP_MAX,
     CO2_INTENSITY_EL,
     GAS_EFFICIENCY,
     RL_BIN_EDGES_MW,
     RL_BIN_EDGES_RELATIVE,
     RL_BIN_LABELS,
+    estimate_beta_per_bin,
+    raw_beta_per_bin,
     renewable_share_from_components,
     residual_load_from_components,
     rl_bin,
@@ -191,3 +194,112 @@ def test_rl_bin_relative_boundary_values_go_to_upper_bin() -> None:
 
 def test_rl_bin_relative_label_count_matches_edge_count() -> None:
     assert len(RL_BIN_LABELS) == len(RL_BIN_EDGES_RELATIVE) - 1
+
+
+# ---------------------------------------------------------------------------
+# raw_beta_per_bin / estimate_beta_per_bin (Sprint 7 Step 7.5, Teil 0)
+# ---------------------------------------------------------------------------
+
+_BIN5_RL = 34000.0  # inside RL_BIN_EDGES_MW -> bin 5
+_BIN7_RL = 40000.0  # inside RL_BIN_EDGES_MW -> bin 7
+
+
+def _long_history_frame(
+    *, n_days: int, beta_bin5: float, beta_bin7: float, is_crisis: bool = False
+) -> pd.DataFrame:
+    idx = pd.date_range("2024-01-01", periods=n_days * 24, freq="h", tz=LOCAL_TZ).tz_convert("UTC")
+    rng = np.random.default_rng(0)
+    is_bin5 = np.arange(len(idx)) % 2 == 0
+    residual_load = np.where(is_bin5, _BIN5_RL, _BIN7_RL)
+    ttf = rng.uniform(10, 100, size=len(idx))
+    eua = np.full(len(idx), 50.0)
+    srmc = srmc_gas_only(pd.Series(ttf)).to_numpy()
+    beta_true = np.where(is_bin5, beta_bin5, beta_bin7)
+    price = 10.0 + beta_true * srmc
+    return pd.DataFrame(
+        {
+            "price": price,
+            "residual_load": residual_load,
+            "ttf_lag": ttf,
+            "eua_lag": eua,
+            "is_crisis": is_crisis,
+        },
+        index=idx,
+    )
+
+
+def test_raw_beta_per_bin_requires_long_history_columns() -> None:
+    frame = pd.DataFrame({"price": [1.0]}, index=pd.date_range("2024-01-01", periods=1, tz="UTC"))
+    with pytest.raises(ValueError, match="residual_load"):
+        raw_beta_per_bin(
+            frame,
+            pd.Timestamp("2024-02-01", tz=LOCAL_TZ),
+            srmc_definition="gas_only",
+            rl_measure="absolute",
+            window_days=None,
+        )
+
+
+def test_raw_beta_per_bin_recovers_known_beta() -> None:
+    frame = _long_history_frame(n_days=10, beta_bin5=0.6, beta_bin7=0.9)
+    cutoff = pd.Timestamp("2024-01-11", tz=LOCAL_TZ)  # strictly after all 10 days
+    raw = raw_beta_per_bin(
+        frame, cutoff, srmc_definition="gas_only", rl_measure="absolute", window_days=None
+    )
+    assert abs(raw.loc[5, "beta_raw"] - 0.6) < 0.05
+    assert abs(raw.loc[7, "beta_raw"] - 0.9) < 0.05
+    assert raw.loc[5, "n"] == 120  # 10 days * 12 bin5-hours/day
+
+
+def test_raw_beta_per_bin_below_min_obs_is_nan() -> None:
+    frame = _long_history_frame(n_days=1, beta_bin5=0.6, beta_bin7=0.9)  # 12h/bin < 48
+    cutoff = pd.Timestamp("2024-01-02", tz=LOCAL_TZ)
+    raw = raw_beta_per_bin(
+        frame, cutoff, srmc_definition="gas_only", rl_measure="absolute", window_days=None
+    )
+    assert pd.isna(raw.loc[5, "beta_raw"])
+    assert raw.loc[5, "n"] == 12
+
+
+def test_raw_beta_per_bin_excludes_crisis_rows() -> None:
+    frame = _long_history_frame(n_days=10, beta_bin5=0.6, beta_bin7=0.9, is_crisis=True)
+    cutoff = pd.Timestamp("2024-01-11", tz=LOCAL_TZ)
+    raw = raw_beta_per_bin(
+        frame, cutoff, srmc_definition="gas_only", rl_measure="absolute", window_days=None
+    )
+    assert raw["n"].eq(0).all()
+
+
+def test_raw_beta_per_bin_window_days_excludes_data_before_window_start() -> None:
+    # 10 contaminated days (beta jumps by +20) immediately followed by 10
+    # clean days. An expanding pool mixes both; a 10-day window should see
+    # only the clean tail.
+    clean = _long_history_frame(n_days=10, beta_bin5=0.6, beta_bin7=0.9)
+    contaminated = _long_history_frame(n_days=10, beta_bin5=20.6, beta_bin7=20.9)
+    contaminated.index = contaminated.index - pd.Timedelta(days=10)
+    frame = pd.concat([contaminated, clean]).sort_index()
+    cutoff = pd.Timestamp("2024-01-11", tz=LOCAL_TZ)
+
+    full_pool = raw_beta_per_bin(
+        frame, cutoff, srmc_definition="gas_only", rl_measure="absolute", window_days=None
+    )
+    windowed = raw_beta_per_bin(
+        frame, cutoff, srmc_definition="gas_only", rl_measure="absolute", window_days=10
+    )
+    assert abs(full_pool.loc[5, "beta_raw"] - 0.6) > 1.0  # pulled toward the contaminated regime
+    assert abs(windowed.loc[5, "beta_raw"] - 0.6) < 0.05  # window excludes it
+
+
+def test_estimate_beta_per_bin_applies_isotonic_smoothing_and_clamp() -> None:
+    frame = _long_history_frame(n_days=10, beta_bin5=0.6, beta_bin7=3.0)
+    cutoff = pd.Timestamp("2024-01-11", tz=LOCAL_TZ)
+    smoothed = estimate_beta_per_bin(
+        frame,
+        cutoff,
+        srmc_definition="gas_only",
+        rl_measure="absolute",
+        window_days=None,
+        clamp_max=BETA_CLAMP_MAX,
+    )
+    assert smoothed.loc[7] <= BETA_CLAMP_MAX
+    assert (smoothed.diff().dropna() >= -1e-12).all()

@@ -2,7 +2,11 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from energy_price_forecast.common.features.merit_order import srmc_gas_only
+from energy_price_forecast.common.features.merit_order import (
+    BETA_CLAMP_MAX,
+    estimate_beta_per_bin,
+    srmc_gas_only,
+)
 from energy_price_forecast.common.market_time import LOCAL_TZ
 from energy_price_forecast.common.models.lgbm import LGBMForecaster
 from energy_price_forecast.common.models.merit_order_forecaster import MeritOrderForecaster
@@ -89,6 +93,81 @@ def test_beta_estimation_uses_only_data_before_fold_day() -> None:
     assert abs(beta_bin5 - 20.6) > 1.0
 
 
+def test_calendar_month_rule_excludes_data_between_anchor_and_fold_day() -> None:
+    # Switch happens on day 185 (2019-07-05) -- strictly after anchor(D)=day
+    # 181 (2019-07-01) but before D=day 200 (2019-07-20). The calendar_month
+    # pool cutoff is anchor(D), so this switched data must not enter the
+    # pool -- unlike a day-D cutoff (the pre-Teil-0 behaviour), which would
+    # include it and visibly pull the estimate away from the clean value.
+    frame, idx = _synthetic_long_history(n_days=250, beta_bin5=0.6, beta_bin7=0.9, switch_day=185)
+    y_train, x_train = _fold_x_y(frame, idx, start_day=190, end_day=200)
+    day_d_local = pd.DatetimeIndex(y_train.index).tz_convert(
+        LOCAL_TZ
+    ).normalize().max() + pd.DateOffset(days=1)
+
+    model = MeritOrderForecaster(frame, srmc_definition="gas_only")
+    model.fit(y_train, x_train)
+    beta_with_anchor_cutoff = model._beta_per_bin.loc[5]  # type: ignore[union-attr]
+
+    beta_with_day_d_cutoff = estimate_beta_per_bin(
+        frame,
+        day_d_local,
+        srmc_definition="gas_only",
+        rl_measure="absolute",
+        window_days=None,
+        clamp_max=BETA_CLAMP_MAX,
+    ).loc[5]
+
+    assert abs(beta_with_anchor_cutoff - 0.6) < 0.05
+    assert abs(beta_with_day_d_cutoff - 0.6) > 0.5
+
+
+def _run_sequential_folds(
+    model: MeritOrderForecaster,
+    frame: pd.DataFrame,
+    idx: pd.DatetimeIndex,
+    fold_days: list[int],
+    *,
+    train_span_days: int,
+) -> dict[int, float]:
+    """Drive ``model`` through a sequence of folds (fit on the preceding
+    ``train_span_days`` days, predict for day ``d``), mimicking
+    ``run_backtest``'s per-fold loop with ``refit_every=1``. Returns the
+    predicted price at hour 0 of each fold day, keyed by day number.
+    """
+    preds = {}
+    for d in fold_days:
+        y_train, x_train = _fold_x_y(frame, idx, start_day=d - train_span_days, end_day=d)
+        model.fit(y_train, x_train)
+        _, x_test = _fold_x_y(frame, idx, start_day=d, end_day=d + 1)
+        pred = model.predict(x_test.index, history=y_train, x_test=x_test)
+        preds[d] = float(pred.iloc[0])
+    return preds
+
+
+def test_calendar_month_rule_is_reproducible_across_different_run_start_days() -> None:
+    # Two independently driven fold sequences on the same data: one starting
+    # on day 31 (2019-02-01, the month's own 1st), the other starting on day
+    # 47 (2019-02-17, 16 days later in the same month) -- different
+    # run-start days. They share fold days 100 (2019-04-11) and 130
+    # (2019-05-11), each in a later month the "late" run never visited the
+    # start of. Per Teil 0, beta for a shared day depends only on
+    # anchor(day), not on either run's own history, so both must end up
+    # bit-identical on every shared day (same seed, n_jobs=1 -- the
+    # MeritOrderForecaster/LGBMForecaster defaults).
+    frame, idx = _synthetic_long_history(n_days=150, beta_bin5=0.6, beta_bin7=0.9)
+
+    model_early = MeritOrderForecaster(frame, srmc_definition="gas_only")
+    model_late = MeritOrderForecaster(frame, srmc_definition="gas_only")
+
+    preds_early = _run_sequential_folds(model_early, frame, idx, [31, 100, 130], train_span_days=20)
+    preds_late = _run_sequential_folds(model_late, frame, idx, [47, 100, 130], train_span_days=20)
+
+    for d in (100, 130):
+        assert preds_early[d] == preds_late[d]
+    pd.testing.assert_series_equal(model_early._beta_per_bin, model_late._beta_per_bin)  # type: ignore[arg-type]
+
+
 def test_gas_only_works_on_a_feature_matrix_without_eua_column() -> None:
     # Regression test (7.3 Teil 1): L1/L2/Oracle feature matrices (core_gas-
     # derived) never carry eua_co2_lag_48h at all, by design -- gas_only
@@ -118,8 +197,16 @@ def test_beta_clamp_max_override_removes_ceiling() -> None:
 
 
 def test_beta_is_cached_between_cadence_updates() -> None:
+    # beta_update_cadence_days only applies to the legacy rolling_30d rule --
+    # the default calendar_month rule's own "cached between updates" path is
+    # covered by test_calendar_month_rule_is_reproducible_across_different_run_start_days.
     frame, idx = _synthetic_long_history(n_days=300, beta_bin5=0.6, beta_bin7=0.9)
-    model = MeritOrderForecaster(frame, srmc_definition="gas_only", beta_update_cadence_days=30)
+    model = MeritOrderForecaster(
+        frame,
+        srmc_definition="gas_only",
+        beta_update_rule="rolling_30d",
+        beta_update_cadence_days=30,
+    )
 
     y1, x1 = _fold_x_y(frame, idx, start_day=190, end_day=200)
     model.fit(y1, x1)
@@ -281,12 +368,13 @@ def test_b_extrapolates_past_training_ttf_max_while_a_clamps() -> None:
 
 def test_crisis_rows_excluded_from_beta_estimation() -> None:
     frame, idx = _synthetic_long_history(n_days=300, beta_bin5=0.6, beta_bin7=0.9)
-    # Mark everything before day 199 as crisis, leaving only one clean day
-    # (199) in the beta pool for fold day D=200. One day is only 12 hours per
-    # bin -- below _MIN_OBS_PER_BIN -- so if crisis rows are correctly
-    # excluded, both bins stay NaN and smooth_beta_isotonic must raise. If
-    # crisis exclusion were silently skipped, 199 days of crisis data would
-    # still be available and the fit would succeed instead.
+    # Mark everything before day 199 as crisis. Fold day D=200 anchors to day
+    # 181 (2019-07-01, calendar_month rule), so the pool (days < 181) is
+    # entirely inside the crisis region and ends up empty after crisis rows
+    # are excluded -- both bins stay NaN and smooth_beta_isotonic must raise.
+    # If crisis exclusion were silently skipped, 181 days of crisis data
+    # would still be available (well above _MIN_OBS_PER_BIN) and the fit
+    # would succeed instead.
     local_day = pd.DatetimeIndex(idx).tz_convert(LOCAL_TZ).normalize()
     day_number = (local_day - local_day[0]).days
     frame["is_crisis"] = day_number < 199
