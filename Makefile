@@ -1,17 +1,19 @@
-.PHONY: help data backtest test lint dashboard report-assets dm-test requirements
+.PHONY: help data backtest test lint dashboard report-assets dm-test requirements price-reference price-beta
 
 .DEFAULT_GOAL := help
 
 help:
 	@echo "Available targets:"
-	@echo "  data           Build interim + feature parquet from raw data (needs data/raw/ and an ENTSO-E API key in .env -- see README 'Getting started')"
-	@echo "  backtest       Run the flagship LightGBM walk-forward backtest (needs data/processed/features.parquet from 'make data'; no API key needed directly)"
-	@echo "  test           Run the test suite (pytest)"
-	@echo "  lint           Run ruff check, ruff format --check, and mypy (mirrors CI)"
-	@echo "  dashboard      Launch the Streamlit Backtest Explorer locally"
-	@echo "  report-assets  Regenerate README figures/tables from outputs/results/ (no API key needed)"
-	@echo "  dm-test        Run the Diebold-Mariano significance test (no API key needed)"
-	@echo "  requirements   Regenerate requirements.txt for Streamlit Community Cloud deployment"
+	@echo "  data            Build interim + feature parquet from raw data (needs data/raw/ and an ENTSO-E API key in .env -- see README 'Getting started')"
+	@echo "  backtest        Run the flagship LightGBM walk-forward backtest (needs data/processed/features.parquet from 'make data'; no API key needed directly)"
+	@echo "  test            Run the test suite (pytest)"
+	@echo "  lint            Run ruff check, ruff format --check, and mypy (mirrors CI)"
+	@echo "  dashboard       Launch the Streamlit Backtest Explorer locally"
+	@echo "  report-assets   Regenerate README figures/tables from outputs/results/ (no API key needed)"
+	@echo "  dm-test         Run the Diebold-Mariano significance test (no API key needed)"
+	@echo "  requirements    Regenerate requirements.txt for Streamlit Community Cloud deployment"
+	@echo "  price-reference Recompute the price_v1/price_v2 reference run (outputs/results/price_v2/)"
+	@echo "  price-beta      Extend price_v2's monthly beta(RL) table and figure by one more anchor month"
 
 data:
 	uv run python scripts/model_risk_regimes/build_interim.py
@@ -39,3 +41,9 @@ dm-test:
 
 requirements:
 	uv export --format requirements.txt --extra dashboard --no-dev --no-hashes -o src/energy_price_forecast/model_risk_regimes/dashboard/requirements.txt
+
+price-reference:
+	uv run python scripts/model_risk_regimes/run_price_reference.py
+
+price-beta:
+	uv run python scripts/model_risk_regimes/build_price_beta_table.py
