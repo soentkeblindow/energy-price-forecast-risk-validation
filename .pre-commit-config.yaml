@@ -16,6 +16,11 @@ repos:
       - id: mixed-line-ending
         args: ["--fix=lf"]
       - id: detect-private-key
+        # Invoke via `python -m` rather than the generated detect-private-key.exe
+        # entry-point stub: Windows Smart App Control blocks that stub (a
+        # newly-written, unsigned small executable) in this hook's isolated
+        # pre-commit venv, same cause as the mypy hook's entry override above.
+        entry: python -m pre_commit_hooks.detect_private_key
 
   # Ruff: lint + format
   - repo: https://github.com/astral-sh/ruff-pre-commit

@@ -59,14 +59,13 @@ from energy_price_forecast.common.evaluation.walkforward import (
 from energy_price_forecast.common.features.core_gas_columns import L1_COLUMNS
 from energy_price_forecast.common.features.merit_order import (
     build_merit_order_frame,
-    renewable_share_from_components,
-    residual_load_from_components,
     rl_bin,
     ttf_out_of_range_flag,
 )
 from energy_price_forecast.common.market_time import LOCAL_TZ
 from energy_price_forecast.common.models.lgbm import LGBMForecaster
 from energy_price_forecast.common.models.merit_order_forecaster import MeritOrderForecaster
+from energy_price_forecast.model_risk_regimes.features.l2_matrix import build_l2_matrix
 from energy_price_forecast.model_risk_regimes.features.oracle_fundamentals import (
     build_oracle_feature_frame,
     build_oracle_long_history_frame,
@@ -87,31 +86,6 @@ _DAILY_HAC_LAG = 7
 _DAILY_HORIZON = 1
 _HOURLY_HAC_LAG = 48
 _HOURLY_HORIZON = 24
-
-
-def _build_l2_matrix(
-    l1_matrix: pd.DataFrame, renewables_predictions: pd.DataFrame, target_index: pd.DatetimeIndex
-) -> pd.DataFrame:
-    """L1 with its 5 NWP-mapped fundamentals columns (not load) replaced by
-    the renewables reconstruction (spec section 3.3). ``renewables_predictions``
-    is run_renewables_backtest's (run_init_utc, valid_time_utc)-indexed
-    output; each valid_time appears exactly once (one walk-forward fold per
-    day), so flattening to valid_time_utc is unambiguous.
-    """
-    flat = renewables_predictions.set_index(
-        renewables_predictions.index.get_level_values("valid_time_utc")
-    )
-    won = flat["wind_onshore_mw_pred"].reindex(target_index)
-    woff = flat["wind_offshore_mw_pred"].reindex(target_index)
-    solar = flat["solar_mw_pred"].reindex(target_index)
-    load = l1_matrix["load_forecast_day_ahead"]
-    return l1_matrix.assign(
-        wind_onshore_forecast=won,
-        wind_offshore_forecast=woff,
-        solar_forecast=solar,
-        residual_load_forecast=residual_load_from_components(load, won, woff, solar),
-        renewable_share_forecast=renewable_share_from_components(load, won, woff, solar),
-    )
 
 
 def _incomplete_local_days(frame: pd.DataFrame) -> set[pd.Timestamp]:
@@ -258,7 +232,7 @@ def main() -> None:
     l0_matrix = features
     l1_matrix = features[list(L1_COLUMNS)]
     renewables_predictions = pd.read_parquet(args.renewables_path)
-    l2_matrix = _build_l2_matrix(l1_matrix, renewables_predictions, index)
+    l2_matrix = build_l2_matrix(l1_matrix, renewables_predictions, index)
     o_re_matrix = build_oracle_feature_frame(l1_matrix, df, "o_re")
     o_all_matrix = build_oracle_feature_frame(l1_matrix, df, "o_all")
 
