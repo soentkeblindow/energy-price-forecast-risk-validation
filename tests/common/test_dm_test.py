@@ -154,6 +154,55 @@ def test_daily_mean_loss_known_means_and_incomplete_day_count() -> None:
     assert n_incomplete == 1
 
 
+def test_daily_mean_loss_local_day_groups_by_europe_berlin_date() -> None:
+    # Exactly the 24 UTC hours of local delivery day 2021-01-02 (CET,
+    # UTC+1): [2021-01-01 23:00, 2021-01-02 23:00) UTC. utc_day splits this
+    # into two UTC dates (1h + 23h -- neither reaches 24, both "incomplete"
+    # under utc_day's plain count); local_day sees one complete local day.
+    idx = _hourly_utc("2021-01-01 23:00", 24)
+    loss = pd.Series(1.0, index=idx)
+
+    daily_utc, n_incomplete_utc = daily_mean_loss(loss, group_by="utc_day")
+    daily_local, n_incomplete_local = daily_mean_loss(loss, group_by="local_day")
+
+    assert len(daily_utc) == 2
+    assert n_incomplete_utc == 2
+    assert len(daily_local) == 1
+    assert n_incomplete_local == 0
+
+
+def test_daily_mean_loss_local_day_does_not_misflag_a_23h_dst_day() -> None:
+    # 2024-03-31 is DE spring-forward (23 local hours) -- a complete day
+    # must not be counted as incomplete under local_day grouping.
+    idx = pd.date_range("2024-03-30 23:00", periods=23, freq="h", tz="UTC")
+    loss = pd.Series(1.0, index=idx)
+
+    daily, n_incomplete = daily_mean_loss(loss, group_by="local_day")
+
+    assert len(daily) == 1
+    assert n_incomplete == 0
+
+
+def test_daily_mean_loss_local_day_does_not_misflag_a_25h_dst_day() -> None:
+    # 2024-10-27 is DE fall-back (25 local hours).
+    idx = pd.date_range("2024-10-26 22:00", periods=25, freq="h", tz="UTC")
+    loss = pd.Series(1.0, index=idx)
+
+    daily, n_incomplete = daily_mean_loss(loss, group_by="local_day")
+
+    assert len(daily) == 1
+    assert n_incomplete == 0
+
+
+def test_daily_mean_loss_local_day_flags_a_genuinely_short_day() -> None:
+    idx = pd.date_range("2024-01-01 23:00", periods=20, freq="h", tz="UTC")  # 20h, not 24
+    loss = pd.Series(1.0, index=idx)
+
+    _, n_incomplete = daily_mean_loss(loss, group_by="local_day")
+
+    assert n_incomplete == 1
+
+
 # ---------------------------------------------------------------------------
 # scripts.run_dm_test (script I/O smoke)
 # ---------------------------------------------------------------------------

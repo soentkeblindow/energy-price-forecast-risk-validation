@@ -10,10 +10,13 @@ the persisted predictions and writes the result.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal
 
 import numpy as np
 import pandas as pd
 from scipy import stats
+
+from ..market_time import LOCAL_TZ, expected_timestamp_count, local_day_bounds
 
 
 @dataclass(frozen=True)
@@ -103,15 +106,39 @@ def dm_test(
     )
 
 
-def daily_mean_loss(loss: pd.Series) -> tuple[pd.Series, int]:
-    """Aggregate an hourly, UTC-indexed loss series to calendar-day means.
+def daily_mean_loss(
+    loss: pd.Series, *, group_by: Literal["utc_day", "local_day"] = "utc_day"
+) -> tuple[pd.Series, int]:
+    """Aggregate an hourly loss series to calendar-day means.
 
-    Plain groupby-mean on the UTC date. Returns the daily series plus the
-    count of incomplete days (fewer than 24 hours) so the caller can log it;
-    incomplete days are KEPT (dropping them would silently change `n`).
+    ``group_by="utc_day"`` (default, unchanged behaviour): plain
+    groupby-mean on the UTC date; "incomplete" means fewer than 24 hours.
+
+    ``group_by="local_day"``
+    (docs/seasonal_window_similar_day_spec.md, section 4): groups by
+    Europe/Berlin local delivery day instead, for a DM test on local
+    delivery days rather than UTC days. "Incomplete" then means fewer than
+    that day's own calendar-expected hour count (23/24/25 across DST,
+    ``market_time.expected_timestamp_count``) -- not a hardcoded 24, so a
+    genuinely complete 23h/25h DST day is never misflagged.
+
+    Returns the daily series plus the count of incomplete days so the
+    caller can log it; incomplete days are KEPT (dropping them would
+    silently change `n`).
     """
-    day = pd.DatetimeIndex(loss.index).normalize()
-    grouped = loss.groupby(day)
+    if group_by == "utc_day":
+        day = pd.DatetimeIndex(loss.index).normalize()
+        grouped = loss.groupby(day)
+        daily = grouped.mean()
+        n_incomplete = int((grouped.size() < 24).sum())
+        return daily, n_incomplete
+
+    local_day = pd.DatetimeIndex(loss.index).tz_convert(LOCAL_TZ).normalize()
+    grouped = loss.groupby(local_day)
     daily = grouped.mean()
-    n_incomplete = int((grouped.size() < 24).sum())
+    sizes = grouped.size()
+    expected = pd.Series(
+        {d: expected_timestamp_count(*local_day_bounds(d.date()), 60) for d in sizes.index}
+    )
+    n_incomplete = int((sizes < expected).sum())
     return daily, n_incomplete
