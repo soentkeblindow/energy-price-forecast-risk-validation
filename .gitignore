@@ -228,9 +228,7 @@ data/cache/*
 !data/cache/.gitkeep
 
 # specs
-docs/*
-# ...except model cards, which are public and checked in (Sprint 7 Step 7.6, Teil C)
-!docs/model_card_*.md
+docs/
 
 # MLflow Artefakte
 mlruns/
