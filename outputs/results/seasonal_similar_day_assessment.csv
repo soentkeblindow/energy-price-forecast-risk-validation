@@ -1,0 +1,7 @@
+variant,reference,factor,criterion_1_not_significantly_worse,sep_nov_rmse_change_pct,mar_apr_rmse_change_pct,criterion_2_ok,improvement,monday_bias_var,monday_bias_ref,monday_bias_relative_shrink,holiday_rmse_var,holiday_rmse_ref,holiday_rmse_not_worse,seasonal_criterion_2_ok,similar_day_criterion_2_ok
+seasonal_A,rolling90_A,seasonal,True,3.6493685126883917,-8.309151385779021,False,False,,,,,,,,
+rolling90_similar_A,rolling90_A,similar_day,True,,,False,False,2.9578582636820205,3.4232071806567914,0.1359394545571989,28.245991262677915,28.95180170672983,True,,
+seasonal_similar_A,rolling90_A,combination,True,,,False,False,,,,,,,False,False
+seasonal_B,rolling90_B,seasonal,True,-1.2843990641624001,-7.418449214919846,False,False,,,,,,,,
+rolling90_similar_B,rolling90_B,similar_day,True,,,False,False,2.2508028735111547,2.186521017517941,-0.029399148454646085,28.831867761601675,29.261515740457504,True,,
+seasonal_similar_B,rolling90_B,combination,True,,,False,False,,,,,,,False,True
