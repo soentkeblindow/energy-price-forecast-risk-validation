@@ -103,7 +103,6 @@ def test_knowledge_time_nwp_reconstruction_spans_dst_boundary_correctly() -> Non
 
 def test_availability_of_registered_columns() -> None:
     assert availability_of("day_ahead_price") is Availability.DA_FIXED
-    assert availability_of("fr_day_ahead_price") is Availability.DA_FIXED
     assert availability_of("load_actual") is Availability.RT_ACTUAL
     assert availability_of("ttf_gas_eur_per_mwh") is Availability.COMMODITY
     assert availability_of("eua_co2_eur_per_t") is Availability.COMMODITY
@@ -148,14 +147,6 @@ def test_availability_of_nwp_reconstruction_columns() -> None:
 def test_price_lag_24h_passes() -> None:
     raw = _raw("2024-01-13 23:00", 24, "day_ahead_price")
     f = lag("price_lag_24h", raw, "day_ahead_price", hours=24, target_index=_TARGET_JAN15)
-    assert_no_leakage([f])
-
-
-def test_fr_price_lag_24h_passes() -> None:
-    # Sprint 7 Step 7.5 Hauptteil: fr_day_ahead_price is DA_FIXED, same
-    # semantics as day_ahead_price, so a 24h lag passes leakage the same way.
-    raw = _raw("2024-01-13 23:00", 24, "fr_day_ahead_price")
-    f = lag("fr_price_lag_24h", raw, "fr_day_ahead_price", hours=24, target_index=_TARGET_JAN15)
     assert_no_leakage([f])
 
 

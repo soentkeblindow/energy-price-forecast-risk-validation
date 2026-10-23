@@ -22,7 +22,7 @@ from .config import FeatureConfig
 from .fundamentals import build_commodity_features, build_forecast_fundamentals
 
 SrmcDefinition = Literal["gas_only", "gas_full"]
-RlMeasure = Literal["absolute", "relative"]
+RlMeasure = Literal["absolute"]
 
 # Clean Spark Spread market convention (UK/ICE) for a gas-fired plant's
 # short-run marginal cost. Physical cross-check: 56.6 t CO2/TJ (EU ETS standard
@@ -119,54 +119,6 @@ def renewable_share_from_components(
     return (wind_onshore + wind_offshore + solar) / load
 
 
-def rl_relative(residual_load: pd.Series, load: pd.Series) -> pd.Series:
-    """Residual load as a fraction of day-ahead load (spec section 2,
-    B-rel sensitivity): ``residual_load / load``.
-
-    Renewables build-out since 2019 shifts the absolute RL distribution, so
-    this is the relative-RL counterpart to the (fixed-MW) ``RL_BIN_EDGES_MW``
-    binning, meant to stay comparable across years.
-    """
-    return residual_load / load
-
-
-# Relative-RL bin edges (fraction of load, dimensionless). Frozen from the
-# deciles of residual_load_forecast / load_forecast_day_ahead over the same
-# 2019-01-01..2020-12-31 window as RL_BIN_EDGES_MW (n=17,520 valid hours,
-# identical 24 NaN hours dropped) -- see
-# docs/merit_order_extrapolation_structure_measurement_log.md, B-rel
-# sensitivity. Same rule as the absolute edges: the lowest decile
-# (~0.367) does not separate the rare RL<0 hours (0.11% of 2019-2020, the
-# same hours as for RL_BIN_EDGES_MW since the sign of RL/load matches the
-# sign of RL), so a dedicated bin at 0 is added.
-RL_BIN_EDGES_RELATIVE: tuple[float, ...] = (
-    float("-inf"),
-    0.0,
-    0.3669691009968795,
-    0.47778109214719716,
-    0.5558413666390126,
-    0.6195223389993966,
-    0.6766913007795885,
-    0.7284595026250806,
-    0.7776308011413019,
-    0.8327000943108853,
-    0.8910611743250727,
-    float("inf"),
-)
-
-
-def rl_bin_relative(residual_load_relative: pd.Series) -> pd.Series:
-    """Bin relative residual load (fraction of load) into the frozen
-    relative-RL bins (same bin count/semantics as ``rl_bin``).
-    """
-    return pd.cut(
-        residual_load_relative,
-        bins=RL_BIN_EDGES_RELATIVE,
-        labels=RL_BIN_LABELS,
-        right=False,
-    )
-
-
 # Variant B clamps beta into this range (spec section 5.3, step 2): a
 # gas-plant pass-through below 0 or above 1.5x the commodity price has no
 # physical reading and would only reflect estimation noise in a thin bin.
@@ -219,8 +171,7 @@ def _srmc_for_pool(srmc_definition: SrmcDefinition, ttf: pd.Series, eua: pd.Seri
 
 
 def _bin_pool(rl_measure: RlMeasure, pool: pd.DataFrame) -> pd.Series:
-    if rl_measure == "relative":
-        return rl_bin_relative(pool["residual_load"] / pool["load"])
+    assert rl_measure == "absolute"
     return rl_bin(pool["residual_load"])
 
 
@@ -244,15 +195,13 @@ def raw_beta_per_bin(
 
     Leakage contract: it is the caller's job to pick ``cutoff_local`` so that
     only data known before whatever it will be used for enters the pool --
-    see ``merit_order_forecaster.MeritOrderForecaster``'s two update rules.
+    see ``merit_order_forecaster.MeritOrderForecaster``'s calendar-month
+    update rule.
 
     Required ``long_history`` columns: ``price``, ``residual_load``,
-    ``ttf_lag``, ``eua_lag``, ``is_crisis``, plus ``load`` when
-    ``rl_measure="relative"``.
+    ``ttf_lag``, ``eua_lag``, ``is_crisis``.
     """
     required = {"price", "residual_load", "ttf_lag", "eua_lag", "is_crisis"}
-    if rl_measure == "relative":
-        required = required | {"load"}
     missing = required - set(long_history.columns)
     if missing:
         raise ValueError(f"long_history is missing columns: {sorted(missing)}")
@@ -323,8 +272,7 @@ def build_merit_order_frame(
 
     Columns: ``price``, ``residual_load``, ``load``, ``ttf_lag``, ``eua_lag``,
     ``is_crisis``. Callers derive RL bins and SRMC on top via ``rl_bin`` /
-    ``rl_bin_relative`` / ``srmc_gas_only`` / ``srmc_gas_full`` -- kept out of
-    this frame so the RL measure and SRMC definition stay a per-caller
+    ``srmc_gas_full`` -- kept out of this frame so that stays a per-caller
     choice.
     """
     cfg = config if config is not None else FeatureConfig()

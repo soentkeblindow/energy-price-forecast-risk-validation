@@ -8,15 +8,12 @@ from energy_price_forecast.common.features.merit_order import (
     CO2_INTENSITY_EL,
     GAS_EFFICIENCY,
     RL_BIN_EDGES_MW,
-    RL_BIN_EDGES_RELATIVE,
     RL_BIN_LABELS,
     estimate_beta_per_bin,
     raw_beta_per_bin,
     renewable_share_from_components,
     residual_load_from_components,
     rl_bin,
-    rl_bin_relative,
-    rl_relative,
     smooth_beta_isotonic,
     srmc_gas_full,
     srmc_gas_only,
@@ -169,31 +166,6 @@ def test_renewable_share_from_components_matches_forecast_fundamentals() -> None
     pd.testing.assert_series_equal(
         result, fundamentals["renewable_share_forecast"], check_names=False
     )
-
-
-def test_rl_relative_divides_by_load() -> None:
-    rl = pd.Series([1000.0, -500.0])
-    load = pd.Series([2000.0, 50000.0])
-    result = rl_relative(rl, load)
-    expected = pd.Series([0.5, -0.01])
-    pd.testing.assert_series_equal(result, expected)
-
-
-def test_rl_bin_relative_negative_residual_load_falls_in_bin_zero() -> None:
-    rel = pd.Series([-0.2, -0.0001])
-    bins = rl_bin_relative(rel)
-    assert (bins == 0).all()
-
-
-def test_rl_bin_relative_boundary_values_go_to_upper_bin() -> None:
-    rel = pd.Series([0.0, RL_BIN_EDGES_RELATIVE[2]])
-    bins = rl_bin_relative(rel)
-    assert bins.iloc[0] == 1
-    assert bins.iloc[1] == 2
-
-
-def test_rl_bin_relative_label_count_matches_edge_count() -> None:
-    assert len(RL_BIN_LABELS) == len(RL_BIN_EDGES_RELATIVE) - 1
 
 
 # ---------------------------------------------------------------------------
