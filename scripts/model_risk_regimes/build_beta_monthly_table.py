@@ -27,6 +27,8 @@ from energy_price_forecast.common.evaluation.walkforward import last_complete_lo
 from energy_price_forecast.common.features.merit_order import (
     BETA_CLAMP_MAX,
     RL_BIN_LABELS,
+    RlMeasure,
+    SrmcDefinition,
     build_merit_order_frame,
     raw_beta_per_bin,
     smooth_beta_isotonic,
@@ -63,6 +65,42 @@ def _parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
+def build_beta_monthly_table(
+    long_history: pd.DataFrame,
+    anchors: list[pd.Timestamp],
+    *,
+    srmc_definition: SrmcDefinition,
+    rl_measure: RlMeasure,
+    window_days: int | None,
+) -> pd.DataFrame:
+    """One row per (anchor month, RL bin): ``anchor_month``, ``bin``,
+    ``beta_raw``, ``beta_smoothed``, ``n``. Extracted so a second driver
+    (Sprint 7 Step 7.6, Teil B) can build this table for several
+    ``MeritOrderForecaster`` configurations without duplicating the loop.
+    """
+    rows = []
+    for anchor in anchors:
+        raw = raw_beta_per_bin(
+            long_history,
+            anchor,
+            srmc_definition=srmc_definition,
+            rl_measure=rl_measure,
+            window_days=window_days,
+        )
+        smoothed = smooth_beta_isotonic(raw["beta_raw"], upper=BETA_CLAMP_MAX)
+        for label in RL_BIN_LABELS:
+            rows.append(
+                {
+                    "anchor_month": anchor.strftime("%Y-%m"),
+                    "bin": label,
+                    "beta_raw": raw.loc[label, "beta_raw"],
+                    "beta_smoothed": smoothed.loc[label],
+                    "n": int(raw.loc[label, "n"]),
+                }
+            )
+    return pd.DataFrame(rows)
+
+
 def main() -> None:
     args = _parse_args()
     df = load_interim_hourly(args.data_path)
@@ -76,28 +114,13 @@ def main() -> None:
         "anchor months: %s .. %s (%d months)", anchors[0].date(), anchors[-1].date(), len(anchors)
     )
 
-    rows = []
-    for anchor in anchors:
-        raw = raw_beta_per_bin(
-            long_history,
-            anchor,
-            srmc_definition="gas_only",
-            rl_measure="absolute",
-            window_days=None,
-        )
-        smoothed = smooth_beta_isotonic(raw["beta_raw"], upper=BETA_CLAMP_MAX)
-        for label in RL_BIN_LABELS:
-            rows.append(
-                {
-                    "anchor_month": anchor.strftime("%Y-%m"),
-                    "bin": label,
-                    "beta_raw": raw.loc[label, "beta_raw"],
-                    "beta_smoothed": smoothed.loc[label],
-                    "n": int(raw.loc[label, "n"]),
-                }
-            )
-
-    table = pd.DataFrame(rows)
+    table = build_beta_monthly_table(
+        long_history,
+        anchors,
+        srmc_definition="gas_only",
+        rl_measure="absolute",
+        window_days=None,
+    )
     args.out_csv.parent.mkdir(parents=True, exist_ok=True)
     table.to_csv(args.out_csv, index=False)
     logger.info(

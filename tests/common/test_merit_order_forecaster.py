@@ -5,6 +5,7 @@ import pytest
 from energy_price_forecast.common.features.merit_order import (
     BETA_CLAMP_MAX,
     estimate_beta_per_bin,
+    srmc_gas_full,
     srmc_gas_only,
 )
 from energy_price_forecast.common.market_time import LOCAL_TZ
@@ -364,6 +365,125 @@ def test_b_extrapolates_past_training_ttf_max_while_a_clamps() -> None:
     # B continues the linear relationship via the beta*srmc side channel:
     # close to the true extrapolated price, not clamped near the training max.
     assert abs(pred_b - expected_price) < expected_price * 0.15
+
+
+def test_gas_full_srmc_reads_eua_from_feature_matrix_and_fits() -> None:
+    # Sprint 7 Step 7.6, Teil B (B-full): srmc_definition="gas_full" was only
+    # ever exercised at the pure-function level (test_merit_order.py) before
+    # this test -- never through MeritOrderForecaster.fit/.predict, which is
+    # what actually reads eua_co2_lag_48h off the x matrix passed in at fold
+    # time, not off long_history. eua varies independently of ttf (not a
+    # constant, unlike the shared helper's fixture) so a correct fit must
+    # reproduce the true beta via the full SRMC formula, not just the
+    # gas-only one.
+    n_days = 300
+    idx = pd.date_range("2019-01-01", periods=n_days * 24, freq="h", tz=LOCAL_TZ).tz_convert("UTC")
+    rng = np.random.default_rng(0)
+    is_bin5 = np.arange(len(idx)) % 2 == 0
+    residual_load = np.where(is_bin5, _RL_BIN_5, _RL_BIN_7)
+    ttf = rng.uniform(10, 100, size=len(idx))
+    eua = rng.uniform(20, 80, size=len(idx))
+    beta_true = np.where(is_bin5, 0.6, 0.9)
+    srmc = srmc_gas_full(pd.Series(ttf), pd.Series(eua)).to_numpy()
+    price = 10.0 + beta_true * srmc
+
+    frame = pd.DataFrame(
+        {
+            "price": price,
+            "residual_load": residual_load,
+            "ttf_lag": ttf,
+            "eua_lag": eua,
+            "is_crisis": False,
+        },
+        index=idx,
+    )
+    local_day = pd.DatetimeIndex(idx).tz_convert(LOCAL_TZ).normalize()
+    day_number = (local_day - local_day[0]).days
+    mask = (day_number >= 190) & (day_number < 200)
+    x_train = pd.DataFrame(
+        {
+            "residual_load_forecast": frame.loc[mask, "residual_load"],
+            "ttf_gas_lag_48h": frame.loc[mask, "ttf_lag"],
+            "eua_co2_lag_48h": frame.loc[mask, "eua_lag"],
+        },
+        index=idx[mask],
+    )
+    y_train = frame.loc[mask, "price"]
+
+    model = MeritOrderForecaster(frame, srmc_definition="gas_full", beta_update_cadence_days=30)
+    model.fit(y_train, x_train)
+    preds = model.predict(x_train.index, history=y_train, x_test=x_train)
+
+    assert preds.notna().all()
+    assert abs(model._beta_per_bin.loc[5] - 0.6) < 0.05  # type: ignore[union-attr]
+    assert abs(model._beta_per_bin.loc[7] - 0.9) < 0.05  # type: ignore[union-attr]
+
+
+def test_gas_full_requires_eua_column_in_feature_matrix() -> None:
+    # Inverse of test_gas_only_works_on_a_feature_matrix_without_eua_column:
+    # gas_full's SRMC needs eua_co2_lag_48h from the matrix passed to
+    # fit/predict, so dropping it must fail loudly, not silently fall back
+    # to gas-only behaviour.
+    frame, idx = _synthetic_long_history(n_days=300, beta_bin5=0.6, beta_bin7=0.9)
+    y_train, x_train = _fold_x_y(frame, idx, start_day=190, end_day=200)
+    x_train_no_eua = x_train.drop(columns=["eua_co2_lag_48h"])
+
+    model = MeritOrderForecaster(frame, srmc_definition="gas_full", beta_update_cadence_days=30)
+    with pytest.raises(KeyError, match="eua_co2_lag_48h"):
+        model.fit(y_train, x_train_no_eua)
+
+
+def test_beta_window_days_excludes_data_before_window_through_forecaster() -> None:
+    # Sprint 7 Step 7.6, Teil B (B-roll): beta_window_days's exclusion is only
+    # ever exercised directly on raw_beta_per_bin (test_merit_order.py), never
+    # through the MeritOrderForecaster class B-roll actually instantiates.
+    # Contaminated beta (+20) for days < 150, clean beta from day 150 onward;
+    # a fold at day 300 with a 30-day window sits entirely in the clean
+    # regime, while the default expanding pool mixes both regimes.
+    n_days = 300
+    idx = pd.date_range("2019-01-01", periods=n_days * 24, freq="h", tz=LOCAL_TZ).tz_convert("UTC")
+    local_day = pd.DatetimeIndex(idx).tz_convert(LOCAL_TZ).normalize()
+    day_number = (local_day - local_day[0]).days
+    rng = np.random.default_rng(0)
+    is_bin5 = np.arange(len(idx)) % 2 == 0
+    residual_load = np.where(is_bin5, _RL_BIN_5, _RL_BIN_7)
+    ttf = rng.uniform(10, 100, size=len(idx))
+    eua = np.full(len(idx), 50.0)
+    srmc = srmc_gas_only(pd.Series(ttf)).to_numpy()
+
+    contaminated = day_number < 150
+    beta5 = np.where(contaminated, 20.6, 0.6)
+    beta7 = np.where(contaminated, 20.9, 0.9)
+    beta_true = np.where(is_bin5, beta5, beta7)
+    price = 10.0 + beta_true * srmc
+
+    frame = pd.DataFrame(
+        {
+            "price": price,
+            "residual_load": residual_load,
+            "ttf_lag": ttf,
+            "eua_lag": eua,
+            "is_crisis": False,
+        },
+        index=idx,
+    )
+    y_train, x_train = _fold_x_y(frame, idx, start_day=280, end_day=300)
+
+    windowed = MeritOrderForecaster(
+        frame, srmc_definition="gas_only", beta_update_rule="rolling_30d", beta_window_days=30
+    )
+    windowed.fit(y_train, x_train)
+    expanding = MeritOrderForecaster(
+        frame, srmc_definition="gas_only", beta_update_rule="rolling_30d", beta_window_days=None
+    )
+    expanding.fit(y_train, x_train)
+
+    # The expanding pool's raw (pre-clamp) estimate is pulled far above the
+    # clean value by the contaminated half; the isotonic smoother clamps it
+    # to BETA_CLAMP_MAX (1.5) rather than leaving it at the raw blend, so the
+    # assertion compares against that clamped value, not an unbounded one.
+    assert abs(windowed._beta_per_bin.loc[5] - 0.6) < 0.05  # type: ignore[union-attr]
+    assert abs(expanding._beta_per_bin.loc[5] - 0.6) > 0.5  # type: ignore[union-attr]
 
 
 def test_crisis_rows_excluded_from_beta_estimation() -> None:
