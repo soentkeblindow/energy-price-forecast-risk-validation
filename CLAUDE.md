@@ -37,8 +37,30 @@ Enforced by `tests/test_dependency_rules.py` (AST-based, parametrized over every
 - **Tests:** `uv run pytest` (`-m "not integration"` by default — deselects tests that hit the real ENTSO-E API). Run a single model's tests with `pytest tests/<folder>`. `tests/common/test_provenance.py` is the golden-fixture test guarding byte-identical outputs on known inputs — don't touch its fixtures casually.
 - **Leakage / knowledge-time discipline:** every feature is classified by *when it was actually known* (`common/features/availability.py`'s `Availability` enum — `DETERMINISTIC`/`DA_FIXED`/`DA_FORECAST`/`RT_ACTUAL`/`COMMODITY`/`NWP_RECONSTRUCTION`), not by when it's dated. Gate closure and calendar-day arithmetic live in `common/market_time.py` and use `pd.DateOffset`/plain `date` arithmetic, never a fixed-duration offset on a tz-aware `Timestamp` — the latter silently produces the wrong wall-clock time across a DST transition. Any new backtest, probe, or walk-forward fold must derive its reference time from the data/fold itself, never read `pd.Timestamp.now()`/`dt.date.today()`.
 
+## Hourly price model (`price_v2`)
+
+`price_v2` is the current hourly day-ahead price model (Sprint 7 Step
+7.6/7.7); its configuration lives in exactly one place,
+`src/energy_price_forecast/common/models/price_model.py`
+(`PriceModelConfig`, `PRICE_V1`/`PRICE_V2`, `build_price_model`) — no
+other script sets model parameters directly. Its reference numbers live
+in `outputs/results/price_v2/` (`run_price_reference.py`/
+`build_price_beta_table.py` regenerate them). New measurements against
+the hourly model run against `price_v2`, not against an ad hoc
+reconfiguration of `MeritOrderForecaster` (it now only supports
+`price_v2`'s own path). Completed Sprint 7 studies (merit-order
+structure, variant comparisons, error decomposition, the rejected
+seasonal-window/similar-day/French-price features, the Step 7.6
+selection measurement) were deleted from `main` in Step 7.7's cleanup
+and live on in the `sprint7-studies` git tag — `main` shows the current
+state, the git history (and that tag) is the archive. Every file on
+`main` has a reader (README, the model card, a test, or one of the three
+models' own code); what's public is the result with its evidence, what's
+private is the path that got there; discarded ideas are still named,
+with their result, in `outputs/price_model_development.md`.
+
 ## Where things live
 
 - **Specs and implementation logs:** `docs/*.md` (gitignored, not on GitHub — read them locally for the "why" behind a given sprint; `docs/sprint7_step7_0_spec.md` + `docs/sprint7_step7_0_log.md` for this restructure).
-- **Reports and results meant to be public:** `outputs/` (checked in) — `outputs/results/` (CSV snapshots the README/dashboard read from), `outputs/assets/` (figures), `outputs/model_validation_report.md`.
+- **Reports and results meant to be public:** `outputs/` (checked in) — `outputs/results/` (CSV snapshots the README/dashboard read from, incl. `outputs/results/price_v2/` and the public `outputs/results/model_card_hourly_price.md`), `outputs/assets/` (figures), `outputs/model_validation_report.md`, `outputs/price_model_development.md`.
 - **Data:** `data/README.md` documents provenance (which file came from where, which script regenerates it) for the artifacts copied from the sibling repo in Sprint 7.0 (quarter-hourly prices, weather archive, renewables forecasts, weather/ENTSO-E caches).

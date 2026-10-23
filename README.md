@@ -64,11 +64,11 @@ In October 2026 the gas price rose to the highest level in the live model's 90-d
 
 The long hourly history makes it possible to measure what the model was missing. How strongly the gas price passes through to the power price rises steadily with residual load (load minus wind and solar): from about 0.4 at negative residual load to about 2.0 when gas plants set the price. The relationship holds across 2019–2026.
 
-<img src="outputs/assets/merit_order_beta_by_year.png" alt="Gas pass-through by year and residual-load bin" width="600">
+<img src="outputs/assets/price_v2_beta.png" alt="Gas pass-through by anchor month and residual-load bin" width="600">
 
 Taking this term out of the tree's target is significantly better over 2019–2026 (DM p = 0.009) and neutral after the crisis. In the gas-stress hours it turns the bias from +9.4 to −4.4 EUR/MWh. It reduces the October 2026 bias but does not explain the worst days, which coincide with unusually high exports. That signal is visible only ex post, so it cannot be used as a feature yet.
 
-Details, the error decomposition and the export diagnosis: [`autumn_2026_findings.md`](outputs/autumn_2026_findings.md). Status: candidate for the live model, not live.
+Details, the error decomposition and the export diagnosis: [`price_model_development.md`](outputs/price_model_development.md). Status: candidate for the live model, not live.
 
 <details>
 <summary>More figures: fan chart, reliability diagram, dashboard</summary>
