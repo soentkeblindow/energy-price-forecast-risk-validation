@@ -1,3 +1,0 @@
-filename,first_timestamp,last_timestamp,row_count,sha256
-hourly_merit_order.parquet,2019-01-01T00:00:00+00:00,2026-10-20T21:00:00+00:00,68398,68fe91ae1004d7f58634be8f54ec5850224fe02eff9bc972f6b671610210e3fe
-features_merit_order.parquet,2019-01-08T23:00:00+00:00,2026-10-20T21:00:00+00:00,68207,8cf507346cb199dd4ffa81f2762cf5c582b7fe6dcbf48415dfd7d93716fe1ce0

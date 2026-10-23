@@ -1,2 +1,0 @@
-k1_ok,k1_rmse_r,k1_rmse_candidate,k1_dm_p_value,k2_ok,significantly_worse_than_r,verdict,k2_detail_low_r_slope,k2_detail_low_candidate_slope,k2_detail_low_relative_shrink,k2_detail_low_ok,k2_detail_mid_r_slope,k2_detail_mid_candidate_slope,k2_detail_mid_relative_shrink,k2_detail_mid_ok
-False,25.94270617642575,25.954494433158448,0.8639830524812282,False,False,traegt nicht,0.4056794027932526,0.3821855089874266,0.0579124639901899,False,0.36969697351401865,0.37119401802191404,-0.004049382643481758,False

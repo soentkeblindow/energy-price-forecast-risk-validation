@@ -20,6 +20,19 @@ job just to reproduce numbers that already exist.
 | `processed/renewables_forecast_rolling365_l2.parquet` | `model_post_crisis_resolution` features (`loaders.load_renewables_predictions`) | `scripts/model_renewables/train_renewables.py --variant rolling365_l2` -- a full walk-forward training run, not cheap; copied rather than re-run to match the numbers already validated in `sbl-energy-forecast` |
 | `cache/weather_single_runs/ecmwf_ifs/` (926 per-run files) | input to `build_weather_artefact.py` above | Open-Meteo ECMWF IFS archive, one HTTP call per run -- **do not re-fetch**, the provider enforces a daily call limit |
 
+**`interim/hourly_merit_order.parquet` and `processed/features_merit_order.parquet`**
+(Sprint 7 Step 7.2, Phase 0) are not copied from the sibling repo -- they are
+the same generic `build_interim.py`/`build_features.py` pipeline above, run
+with their own `--start`/`--end`/`--out`/`--data-path` flags instead of the
+shared `hourly.parquet`/`features.parquet` defaults, so `price_v2`'s own
+longer history (back to 2019, needed for the beta long-history side channel)
+doesn't disturb Project 1's existing regression references
+(`outputs/regression_reference_v1.2/`). Regenerate with
+`uv run python scripts/model_risk_regimes/build_interim.py --start 2019-01-01 --end <edge> --out data/interim/hourly_merit_order.parquet`,
+then `build_features.py --data-path data/interim/hourly_merit_order.parquet --out data/processed/features_merit_order.parquet`.
+The exact data stand `price_v2`'s reference run (Step 7.7, Teil C) used is
+hashed in `outputs/results/price_v2/data_snapshot.csv`.
+
 `data/raw/entsoe` also received 48 additional cached months (Aug-Oct 2026,
 across all six ENTSO-E series) copied from `sbl-energy-forecast`'s cache,
 additively -- Repo 1's own older history (back to 2019) was left untouched.
