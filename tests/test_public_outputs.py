@@ -25,11 +25,6 @@ PUBLIC_MARKDOWN_FILES: list[Path] = [
 
 _LINK_OR_IMAGE_RE = re.compile(r"\[[^\]]*\]\(([^)]+)\)|<img[^>]+src=\"([^\"]+)\"")
 
-# Configured directly in the GitHub repo settings (social preview image),
-# never referenced from markdown -- confirmed with the owner (Sprint 7
-# Step 7.7, D.5), not an orphan despite the lack of a markdown reference.
-ASSET_ALLOWLIST = {"social_preview.png"}
-
 
 def _local_relative_paths(markdown_text: str) -> list[str]:
     """Every link/image target in ``markdown_text`` that is a local
@@ -69,11 +64,7 @@ def test_every_asset_is_used_by_at_least_one_public_markdown_file() -> None:
             if resolved.is_relative_to(assets_dir):
                 referenced.add(resolved.name)
 
-    orphaned = [
-        f.name
-        for f in assets_dir.iterdir()
-        if f.is_file() and f.name not in referenced and f.name not in ASSET_ALLOWLIST
-    ]
+    orphaned = [f.name for f in assets_dir.iterdir() if f.is_file() and f.name not in referenced]
     assert not orphaned, f"orphaned file(s) in outputs/assets/: {orphaned}"
 
 
