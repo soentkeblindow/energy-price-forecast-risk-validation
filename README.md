@@ -66,7 +66,7 @@ The long hourly history makes it possible to measure what the model was missing.
 
 <img src="outputs/assets/price_v2_beta.png" alt="Gas pass-through by anchor month and residual-load bin" width="600">
 
-Taking this term out of the tree's target is significantly better over 2019–2026 (DM p = 0.009) and neutral after the crisis. In the gas-stress hours it turns the bias from +9.4 to −4.4 EUR/MWh. It reduces the October 2026 bias but does not explain the worst days, which coincide with unusually high exports. That signal is visible only ex post, so it cannot be used as a feature yet.
+Taking this term out of the tree's target (`price_v2`) is not significantly different from the baseline (`price_v1`) on average — the Step 7.7 reference recomputation gives DM p=0.82 overall (L2, daily block); the earlier p=0.009 was Step 7.2's own measurement of an older, non-final variant and no longer describes the current model. What does hold up: it still shrinks the bias in gas-stress hours (residual load in the top third while the gas price sits above its training range), from +9.1 to −2.0 EUR/MWh, and the October 2026 bias (+5.0 → +1.3 EUR/MWh; [`reference_metrics.csv`](outputs/results/price_v2/reference_metrics.csv)). It does not explain the worst days, which coincide with unusually high exports. That signal is visible only ex post, so it cannot be used as a feature yet.
 
 Details, the error decomposition and the export diagnosis: [`price_model_development.md`](outputs/price_model_development.md). Status: candidate for the live model, not live.
 
