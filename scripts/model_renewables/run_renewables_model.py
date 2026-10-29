@@ -98,6 +98,26 @@ _VARIANTS: dict[str, dict[str, object]] = {
 }
 
 
+def _baseline_safe_mask(valid_time: pd.DatetimeIndex, label_flat: pd.Series) -> pd.Series:
+    """True for hours whose D-1 local wall-clock lookup (``persistence_baseline_cf``'s
+    contract) is well-defined: not ambiguous/nonexistent across a DST
+    changeover, *and* actually present in ``label_flat`` (the raw ENTSO-E
+    series has occasional gaps). Same reindex ``persistence_baseline_cf``
+    itself does, just returning the mask instead of raising. The normal
+    walk-forward (``require_baseline=True``) already excludes unsafe hours
+    per-fold inside ``run_renewables_backtest``; only reachable here via
+    ``--store-new``'s deliberate ``require_baseline=False`` live path, which
+    keeps a fold's prediction even when it isn't baseline-scorable -- so
+    the metrics step (which the live path still runs, for the published
+    CSV) needs its own, separate exclusion.
+    """
+    local_naive = valid_time.tz_convert(LOCAL_TZ).tz_localize(None)
+    prev_naive = local_naive - pd.DateOffset(days=1)
+    prev_local = prev_naive.tz_localize(LOCAL_TZ, ambiguous="NaT", nonexistent="NaT")
+    prev_utc = pd.DatetimeIndex(prev_local).tz_convert("UTC")
+    return pd.Series(label_flat.reindex(prev_utc).notna().to_numpy(), index=valid_time)
+
+
 def _last_valid_local_day(series: pd.Series) -> pd.Timestamp:
     """Last local (Europe/Berlin) calendar day with no missing hours in
     ``series`` -- the renewables-equivalent of
@@ -384,6 +404,13 @@ def main() -> int:
     elapsed = time.monotonic() - t0
     logger.info("walk-forward finished in %.0fs, %d rows", elapsed, len(predictions))
 
+    # --store-new's require_baseline=False can keep a fold whose D-1
+    # persistence baseline is undefined (DST changeover, or one of the raw
+    # ENTSO-E series' occasional gaps) -- fine for the stored prediction
+    # itself, but persistence_baseline_cf below needs a defined D-1 for
+    # every row, so those hours are excluded from the metrics computation
+    # only (per target: each has its own gaps), never from the stored
+    # `predictions`.
     metric_rows: list[dict[str, object]] = []
     for target in ProductionType:
         raw = target_hourly[TARGET_COLUMNS[target]]
@@ -398,7 +425,18 @@ def main() -> int:
         full_label_flat = pd.Series(
             full_label.to_numpy(), index=pd.DatetimeIndex(raw.index[available])
         )
-        metric_rows.extend(_metrics_for_target(predictions, target, full_label_flat))
+        valid_time = pd.DatetimeIndex(predictions.index.get_level_values("valid_time_utc"))
+        safe = _baseline_safe_mask(valid_time, full_label_flat)
+        predictions_for_target = predictions
+        if not safe.all():
+            logger.info(
+                "%s: excluding %d hour(s) from metrics (D-1 baseline undefined); still "
+                "included in the stored predictions",
+                target.value,
+                int((~safe).sum()),
+            )
+            predictions_for_target = predictions.loc[safe.to_numpy()]
+        metric_rows.extend(_metrics_for_target(predictions_for_target, target, full_label_flat))
     metrics_df = pd.DataFrame(metric_rows)
     metrics_df.insert(0, "variant", args.variant)
 
