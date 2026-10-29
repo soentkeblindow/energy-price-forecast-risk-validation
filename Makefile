@@ -1,4 +1,4 @@
-.PHONY: help data backtest test lint dashboard report-assets dm-test requirements price-model price-beta
+.PHONY: help data backtest test lint dashboard report-assets dm-test requirements price-model price-beta renewables-update
 
 .DEFAULT_GOAL := help
 
@@ -14,6 +14,7 @@ help:
 	@echo "  requirements    Regenerate requirements.txt for Streamlit Community Cloud deployment"
 	@echo "  price-model     Recompute the price_v1/price_v2 reference run (outputs/results/price_v2/)"
 	@echo "  price-beta      Extend price_v2's monthly beta(RL) table and figure by one more anchor month"
+	@echo "  renewables-update  Extend the renewables L2 feature store with fresh data (merge, not overwrite)"
 
 data:
 	uv run python scripts/model_risk_regimes/build_interim.py
@@ -47,3 +48,6 @@ price-model:
 
 price-beta:
 	uv run python scripts/model_risk_regimes/build_price_beta_table.py
+
+renewables-update:
+	uv run python scripts/model_renewables/run_renewables_model.py --store-new

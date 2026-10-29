@@ -17,7 +17,7 @@ job just to reproduce numbers that already exist.
 |---|---|---|
 | `interim/quarterhourly_prices.parquet` | `model_post_crisis_resolution` (native 15-minute price series, shape-profile bridge) | `scripts/model_post_crisis_resolution/build_quarterhourly_prices.py` -- re-fetches from the ENTSO-E cache, no rate limit of its own |
 | `interim/weather_ifs_run00.parquet` | `model_renewables` (ECMWF IFS weather artefact feeding the wind/solar reconstruction) | `scripts/model_renewables/build_weather_artefact.py` -- rebuilds from `cache/weather_single_runs/`, no new Open-Meteo calls needed as long as that cache is present |
-| `processed/renewables_forecast_rolling365_l2.parquet` | `model_post_crisis_resolution` features (`loaders.load_renewables_predictions`) | `scripts/model_renewables/train_renewables.py --variant rolling365_l2` -- a full walk-forward training run, not cheap; copied rather than re-run to match the numbers already validated in `sbl-energy-forecast` |
+| `processed/renewables_forecast_rolling365_l2.parquet` | `model_post_crisis_resolution` features (`loaders.load_renewables_predictions`) | originally copied rather than re-run to match the numbers already validated in `sbl-energy-forecast` (a full walk-forward is not cheap); to extend it with fresh data, use `scripts/model_renewables/run_renewables_model.py --store-new` (merges in only the new rows, see below -- replaces the old manual `run_renewables_backtest` workaround) |
 | `cache/weather_single_runs/ecmwf_ifs/` (926 per-run files) | input to `build_weather_artefact.py` above | Open-Meteo ECMWF IFS archive, one HTTP call per run -- **do not re-fetch**, the provider enforces a daily call limit |
 
 **`interim/hourly_merit_order.parquet` and `processed/features_merit_order.parquet`**
@@ -67,20 +67,21 @@ flipped on load, not in this copy.
 - `processed/renewables_forecast_rolling365_l2.parquet` extended, **not
   regenerated from scratch**: a full `rolling365_l2` re-run over the entire
   2024-2026 history is exactly the "not cheap" full walk-forward job this file
-  was originally copied (not re-run) to avoid. Instead, `run_renewables_backtest`
-  was called directly for a short window (`target_hourly` restricted to
-  2025-07-01..2026-10-20, built from `interim/hourly_merit_order.parquet`
-  -- not the shared `interim/hourly.parquet`, which only extends to
-  2025-12-31 and was deliberately left untouched, same reasoning as 7.2
-  Phase 0) with the variant's exact parameters (`window="rolling"`,
-  `train_span_days=365`, `objective="l2"`, default `refit_every=7`,
-  matching the plain `train_renewables.py --variant rolling365_l2` invocation
-  this table's "Regenerate with" column already documented). Only the rows
-  with `valid_time_utc` after the existing file's previous max
-  (2026-09-07 09:00 UTC) were appended (1,044 new rows, zero duplicate
-  `valid_time_utc` after the merge) -- the overlapping ~2 months the
-  restricted run also produced were discarded, used only to give the
-  365-day rolling window enough runway.
+  was originally copied (not re-run) to avoid. At the time, this required
+  calling `run_renewables_backtest` directly in an ad hoc snippet for a short
+  window (`target_hourly` restricted to 2025-07-01..2026-10-20, built from
+  `interim/hourly_merit_order.parquet` -- not the shared `interim/hourly.parquet`,
+  which only extends to 2025-12-31 and was deliberately left untouched, same
+  reasoning as 7.2 Phase 0) with the variant's exact parameters
+  (`window="rolling"`, `train_span_days=365`, `objective="l2"`, default
+  `refit_every=7`). Only the rows with `valid_time_utc` after the existing
+  file's previous max (2026-09-07 09:00 UTC) were appended (1,044 new rows,
+  zero duplicate `valid_time_utc` after the merge) -- the overlapping ~2
+  months the restricted run also produced were discarded, used only to give
+  the 365-day rolling window enough runway. **This manual workaround is no
+  longer needed**: `scripts/model_renewables/run_renewables_model.py
+  --store-new` now does exactly this (auto-restricted window, merge-not-
+  overwrite, atomic write with a `.bak` backup) as a single command.
 
 **French (FR) day-ahead price, hourly (2026-10-22, Sprint 7 Step 7.5 Hauptteil):**
 `interim/fr_day_ahead_hourly.parquet` -- single column `fr_day_ahead_price`,

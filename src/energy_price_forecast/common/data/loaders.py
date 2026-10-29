@@ -334,7 +334,7 @@ _RENEWABLES_PREDICTIONS_PATH = Path("data/processed/renewables_forecast_rolling3
 def load_renewables_predictions(path: Path = _RENEWABLES_PREDICTIONS_PATH) -> pd.DataFrame:
     """Load the headline-variant renewables reconstruction artefact
     (model_renewables/evaluation/renewables_walkforward.run_renewables_backtest's
-    output, written by scripts/model_renewables/train_renewables.py --variant rolling365_l2).
+    output, written by scripts/model_renewables/run_renewables_model.py --store-new).
 
     Raises FileNotFoundError if the file does not exist. Only the headline
     variant is a valid feature source -- the two comparison variants
@@ -344,7 +344,7 @@ def load_renewables_predictions(path: Path = _RENEWABLES_PREDICTIONS_PATH) -> pd
     if not path.exists():
         raise FileNotFoundError(
             f"Renewables predictions Parquet not found at {path!r}. "
-            "Run scripts/model_renewables/train_renewables.py --variant rolling365_l2 to generate it."
+            "Run scripts/model_renewables/run_renewables_model.py --store-new to generate it."
         )
     df = pd.read_parquet(path)
 

@@ -13,7 +13,7 @@ Two inputs, both already produced by the headline run and read as-is:
   metric).
 - ``data/processed/renewables_forecast_rolling365_l2.parquet`` (the
   headline variant's own per-timestamp predictions/actuals, written by
-  ``scripts/model_renewables/train_renewables.py``) for mean actual
+  ``scripts/model_renewables/run_renewables_model.py --store-new``) for mean actual
   generation per season -- context the aggregated CSV does not carry,
   without which a seasonal MAE difference is not interpretable (a season
   with a much higher mean output will tend to have a much higher absolute
