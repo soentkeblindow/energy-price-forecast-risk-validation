@@ -32,7 +32,11 @@ class PriceModelConfig:
     beta clamped to ``[0, 1.5]`` and isotonically smoothed, minimum 48
     observations per bin -- all fixed inside ``MeritOrderForecaster``
     itself (that class now supports only this one path), not configurable
-    here.
+    here. ``hide_from_tree`` is the one deliberate exception: SRMC/beta are
+    unaffected (still computed from the full feature matrix), it only
+    controls which column(s) the *inner* LightGBM tree additionally sees --
+    an ablation knob, not a structural choice, default ``()`` leaves
+    ``PRICE_V2`` bit-identical to before it existed.
     """
 
     model_version: ModelVersion
@@ -46,6 +50,7 @@ class PriceModelConfig:
     lgbm_params: dict[str, Any] | None = None
     random_state: int = 0
     n_jobs: int = 1
+    hide_from_tree: tuple[str, ...] = ()  # only meaningful when use_transform
 
 
 PRICE_V1 = PriceModelConfig(
@@ -91,4 +96,5 @@ def build_price_model(config: PriceModelConfig, long_history: pd.DataFrame) -> F
         params=config.lgbm_params,
         random_state=config.random_state,
         n_jobs=config.n_jobs,
+        hide_from_tree=config.hide_from_tree,
     )

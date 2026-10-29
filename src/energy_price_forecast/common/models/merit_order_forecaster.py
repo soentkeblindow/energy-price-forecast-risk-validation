@@ -12,8 +12,13 @@ from typing import Any, Literal
 import pandas as pd
 
 from ..features.merit_order import BETA_CLAMP_MAX, estimate_beta_per_bin, rl_bin, srmc_gas_full
+from ..features.subset import drop_features
 from ..market_time import LOCAL_TZ, month_start_local
 from .lgbm import LGBMForecaster
+
+# The two columns _bin_and_srmc reads SRMC from -- also the ones a
+# `hide_from_tree` ablation study would want to hide (see its own docstring).
+SRMC_COLUMNS: tuple[str, str] = ("ttf_gas_lag_48h", "eua_co2_lag_48h")
 
 
 class MeritOrderForecaster:
@@ -48,6 +53,19 @@ class MeritOrderForecaster:
     this class calls with the cutoff each month computes -- also used
     directly (bypassing this class) to build the monthly beta reference
     table (``scripts/model_risk_regimes/build_price_beta_table.py``).
+
+    ``hide_from_tree``: ablation-only, defaults to ``()`` (price_v2's
+    canonical, bit-identical behaviour -- the inner tree sees every column
+    of ``x_train``/``x_test``, including ``SRMC_COLUMNS``). SRMC is always
+    computed from ``x`` itself (``_bin_and_srmc``), never from
+    ``long_history`` (that side channel only ever feeds the beta(RL)
+    regression) -- so simply dropping ``SRMC_COLUMNS`` from the feature
+    matrix before it reaches this class breaks SRMC entirely, it does not
+    "ablate a redundant tree feature". ``hide_from_tree`` answers the
+    actual question (does the tree still need its own copy of a column
+    SRMC already uses?) correctly: SRMC/beta are computed from the full
+    ``x`` as always, and only afterwards are these column(s) dropped from
+    what reaches the inner ``LGBMForecaster``.
     """
 
     def __init__(
@@ -60,6 +78,7 @@ class MeritOrderForecaster:
         params: dict[str, Any] | None = None,
         random_state: int = 0,
         n_jobs: int = 1,
+        hide_from_tree: tuple[str, ...] = (),
     ) -> None:
         required = {"price", "residual_load", "ttf_lag", "eua_lag", "is_crisis"}
         missing = required - set(long_history.columns)
@@ -67,6 +86,7 @@ class MeritOrderForecaster:
             raise ValueError(f"long_history is missing columns: {sorted(missing)}")
         self._long_history = long_history
         self._beta_window_days = beta_window_days
+        self._hide_from_tree = hide_from_tree
         self._inner = LGBMForecaster(
             objective=objective,
             alpha=alpha,
@@ -77,9 +97,14 @@ class MeritOrderForecaster:
         self._beta_per_bin: pd.Series | None = None
         self._last_anchor_used: pd.Timestamp | None = None
 
+    def _for_tree(self, x: pd.DataFrame) -> pd.DataFrame:
+        if not self._hide_from_tree:
+            return x
+        return drop_features(x, list(self._hide_from_tree), strict=False)
+
     def _bin_and_srmc(self, x: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
         bin_ = rl_bin(x["residual_load_forecast"])
-        srmc = srmc_gas_full(x["ttf_gas_lag_48h"], x["eua_co2_lag_48h"])
+        srmc = srmc_gas_full(x[SRMC_COLUMNS[0]], x[SRMC_COLUMNS[1]])
         return bin_, srmc
 
     def _beta_lookup(self, bin_: pd.Series) -> pd.Series:
@@ -120,7 +145,7 @@ class MeritOrderForecaster:
         bin_train, srmc_train = self._bin_and_srmc(x_train)
         beta_train = self._beta_lookup(bin_train)
         y_prime = y_train - beta_train.to_numpy() * srmc_train.to_numpy()
-        self._inner.fit(y_prime, x_train)
+        self._inner.fit(y_prime, self._for_tree(x_train))
 
     def predict_components(
         self,
@@ -138,7 +163,7 @@ class MeritOrderForecaster:
             raise ValueError("MeritOrderForecaster requires a feature matrix (x_test)")
         bin_test, srmc_test = self._bin_and_srmc(x_test)
         beta_test = self._beta_lookup(bin_test)
-        tree_pred = self._inner.predict(test_index, history=history, x_test=x_test)
+        tree_pred = self._inner.predict(test_index, history=history, x_test=self._for_tree(x_test))
         y_hat = tree_pred.to_numpy() + beta_test.to_numpy() * srmc_test.to_numpy()
         return pd.DataFrame(
             {

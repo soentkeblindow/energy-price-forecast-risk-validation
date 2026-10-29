@@ -52,7 +52,9 @@ from energy_price_forecast.common.features.merit_order import (
     rl_bin,
     ttf_out_of_range_flag,
 )
+from energy_price_forecast.common.features.subset import drop_features
 from energy_price_forecast.common.market_time import LOCAL_TZ, month_start_local
+from energy_price_forecast.common.models.merit_order_forecaster import SRMC_COLUMNS
 from energy_price_forecast.common.models.price_model import PRICE_V1, PRICE_V2, build_price_model
 from energy_price_forecast.model_risk_regimes.features.l2_matrix import build_l2_matrix
 
@@ -366,12 +368,23 @@ def _parse_args() -> argparse.Namespace:
         "full set never require --tag -- they get their own, automatically-derived "
         "output suffix instead.)",
     )
+    p.add_argument(
+        "--drop-features",
+        default="",
+        help="Comma-separated feature columns to drop from the tree's input matrix "
+        "in memory before fitting (ablation) -- e.g. ttf_gas_lag_48h,eua_co2_lag_48h to "
+        "test whether price_v2's tree still needs its own copy of gas/CO2 now that the "
+        "merit-order transform already models the pass-through via beta(RL)*SRMC (SRMC "
+        "comes from the separate long_history side channel, untouched by this flag). "
+        "Same drop_features helper backtest.py uses. Requires --tag.",
+    )
     p.add_argument("--study", default="price_reference", help="MLflow tag: logical study grouping.")
     p.add_argument("--note", default="", help="MLflow tag: free-text run note.")
     args = p.parse_args()
 
     args.versions = _parse_scope(args.versions, _VALID_VERSIONS, "versions", p)
     args.rungs = _parse_scope(args.rungs, _VALID_RUNGS, "rungs", p)
+    args.drop_features = [c.strip() for c in args.drop_features.split(",") if c.strip()]
 
     non_default_harness_params = (
         args.train_span_days != 90
@@ -379,12 +392,14 @@ def _parse_args() -> argparse.Namespace:
         or args.test_start is not None
         or args.test_end is not None
         or args.window != "rolling"
+        or bool(args.drop_features)
     )
     if non_default_harness_params and not args.tag:
         p.error(
             "--tag is required when overriding --train-span-days/--refit-every/"
-            "--test-start/--test-end/--window -- it suffixes every output file so a "
-            "harness-parameter sweep never overwrites the canonical price_v2 reference."
+            "--test-start/--test-end/--window/--drop-features -- it suffixes every "
+            "output file so a harness-parameter sweep never overwrites the canonical "
+            "price_v2 reference."
         )
     return args
 
@@ -444,6 +459,53 @@ def main() -> None:
     l2_matrix_v2 = l2_matrix.assign(eua_co2_lag_48h=features["eua_co2_lag_48h"])
     long_history = build_merit_order_frame(df, pd.DatetimeIndex(df.index))
 
+    hide_from_tree: tuple[str, ...] = ()
+    if args.drop_features:
+        # price_v2's MeritOrderForecaster computes SRMC from these exact two
+        # columns of the feature matrix itself (never from long_history --
+        # that side channel only feeds the beta(RL) regression), so simply
+        # dropping them from price_v2's matrices would break SRMC, not
+        # ablate a redundant tree feature. They're routed into
+        # MeritOrderForecaster's own hide_from_tree instead (SRMC/beta
+        # computed as always, just not also exposed to the inner tree).
+        # price_v1 has no such concept -- for it, these are ordinary
+        # columns, dropped like any other requested one.
+        srmc_requested = [c for c in args.drop_features if c in SRMC_COLUMNS]
+        matrix_drop = [c for c in args.drop_features if c not in SRMC_COLUMNS]
+        hide_from_tree = tuple(srmc_requested)
+
+        known = (
+            set(l1_matrix.columns)
+            | set(l2_matrix.columns)
+            | set(l1_matrix_v2.columns)
+            | set(l2_matrix_v2.columns)
+        )
+        unknown = [c for c in args.drop_features if c not in known]
+        if unknown:
+            raise ValueError(
+                f"--drop-features: {unknown} not found in any feature matrix "
+                f"(known columns: {sorted(known)})"
+            )
+        # strict=False: price_v1's matrices (l1_matrix/l2_matrix) never carry
+        # eua_co2_lag_48h in the first place (only price_v2's .assign()'d
+        # copies do) -- a column absent from one matrix but present in
+        # another is expected, not an error (the unknown-name check above
+        # already caught genuine typos).
+        l1_matrix = drop_features(l1_matrix, args.drop_features, strict=False)
+        l2_matrix = drop_features(l2_matrix, args.drop_features, strict=False)
+        if matrix_drop:
+            l1_matrix_v2 = drop_features(l1_matrix_v2, matrix_drop, strict=False)
+            l2_matrix_v2 = drop_features(l2_matrix_v2, matrix_drop, strict=False)
+        logger.info(
+            "dropped %d feature(s) for ablation: %s%s",
+            len(args.drop_features),
+            args.drop_features,
+            f" (price_v2: {list(hide_from_tree)} hidden from the tree only, SRMC/beta "
+            f"still computed from them)"
+            if hide_from_tree
+            else "",
+        )
+
     edge = last_complete_local_day(price)
     logger.info("data edge: %s", edge.date())
 
@@ -452,7 +514,10 @@ def main() -> None:
         PRICE_V1, train_span_days=args.train_span_days, refit_every=args.refit_every
     )
     config_v2 = dataclasses.replace(
-        PRICE_V2, train_span_days=args.train_span_days, refit_every=args.refit_every
+        PRICE_V2,
+        train_span_days=args.train_span_days,
+        refit_every=args.refit_every,
+        hide_from_tree=hide_from_tree,
     )
     cache_suffix = f"_{args.tag}" if args.tag else ""
     if args.tag:
@@ -853,6 +918,7 @@ def main() -> None:
                 "test_end": str(test_end.date()),
                 "window": args.window,
                 "tag": args.tag,
+                "drop_features": ",".join(args.drop_features),
                 "n_folds": len(folds),
             }
         )
