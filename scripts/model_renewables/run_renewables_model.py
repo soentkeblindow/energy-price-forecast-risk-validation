@@ -5,7 +5,7 @@ model_renewables.evaluation.renewables_walkforward.run_renewables_backtest.
 By default, runs the one live variant (`rolling365_l2`) and just evaluates
 it -- nothing is written to the canonical feature store
 (`data/processed/renewables_forecast_rolling365_l2.parquet`, consumed by
-`price_v2`'s L2 feature matrix) or to the published
+`hourly_model_v2`'s L2 feature matrix) or to the published
 `outputs/results/renewables_backtest.csv`; output goes to the gitignored
 `data/processed/renewables_runs/` instead. The two comparison variants
 (`expanding_l2`, `rolling365_quantile`) stay available via `--variant` for

@@ -177,7 +177,7 @@ def test_calendar_month_rule_is_reproducible_across_different_run_start_days() -
 
 
 def test_calendar_month_rule_is_reproducible_with_rolling_window() -> None:
-    # Same reproducibility guarantee as above, but with price_v2's own
+    # Same reproducibility guarantee as above, but with hourly_model_v2's own
     # rolling beta_window_days -- the previous test only covers the
     # expanding (None) window.
     frame, idx = _synthetic_long_history(n_days=150, beta_bin5=0.6, beta_bin7=0.9)
@@ -329,7 +329,7 @@ def test_requires_eua_column_in_feature_matrix() -> None:
 def test_beta_window_days_excludes_data_before_window_through_forecaster() -> None:
     # beta_window_days's exclusion is only ever exercised directly on
     # raw_beta_per_bin (test_merit_order.py), never through the
-    # MeritOrderForecaster class price_v2 actually instantiates.
+    # MeritOrderForecaster class hourly_model_v2 actually instantiates.
     # Contaminated beta (+20) for days < 150, clean beta from day 150 onward;
     # a fold anchored well into the clean regime with a 30-day window sits
     # entirely in it, while the default expanding pool mixes both regimes.

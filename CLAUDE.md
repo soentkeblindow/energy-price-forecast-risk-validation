@@ -37,29 +37,29 @@ Enforced by `tests/test_dependency_rules.py` (AST-based, parametrized over every
 - **Tests:** `uv run pytest` (`-m "not integration"` by default — deselects tests that hit the real ENTSO-E API). Run a single model's tests with `pytest tests/<folder>`. `tests/common/test_provenance.py` is the golden-fixture test guarding byte-identical outputs on known inputs — don't touch its fixtures casually.
 - **Leakage / knowledge-time discipline:** every feature is classified by *when it was actually known* (`common/features/availability.py`'s `Availability` enum — `DETERMINISTIC`/`DA_FIXED`/`DA_FORECAST`/`RT_ACTUAL`/`COMMODITY`/`NWP_RECONSTRUCTION`), not by when it's dated. Gate closure and calendar-day arithmetic live in `common/market_time.py` and use `pd.DateOffset`/plain `date` arithmetic, never a fixed-duration offset on a tz-aware `Timestamp` — the latter silently produces the wrong wall-clock time across a DST transition. Any new backtest, probe, or walk-forward fold must derive its reference time from the data/fold itself, never read `pd.Timestamp.now()`/`dt.date.today()`.
 
-## Hourly price model (`price_v2`)
+## Hourly price model (`hourly_model_v2`)
 
-`price_v2` is the current hourly day-ahead price model (Sprint 7 Step
+`hourly_model_v2` is the current hourly day-ahead price model (Sprint 7 Step
 7.6/7.7); its configuration lives in exactly one place,
 `src/energy_price_forecast/common/models/price_model.py`
-(`PriceModelConfig`, `PRICE_V1`/`PRICE_V2`, `build_price_model`) — no
+(`PriceModelConfig`, `HOURLY_MODEL_V1`/`HOURLY_MODEL_V2`, `build_price_model`) — no
 other script sets model parameters directly. `scripts/model_risk_regimes/
 run_price_model.py` is the main entry point to run it: by default
-`--versions price_v2 --rungs L2` only (the live case -- `price_v1` and L1,
+`--versions hourly_model_v2 --rungs L2` only (the live case -- `hourly_model_v1` and L1,
 ENTSO-E's own forecasts never available live, are opt-in). Every run
 writes to `data/processed/price_model_runs/` (gitignored) by default, no
 exceptions -- the script has no notion of one "canonical" invocation.
-Its reference numbers in `outputs/results/price_v2/` (`build_price_beta_table.py`
+Its reference numbers in `outputs/results/hourly_model_v2/` (`build_price_beta_table.py`
 also contributes to that directory) are published by deliberately passing
-`--out-dir outputs/results/price_v2` -- what `make price-model` runs,
-alongside `--versions price_v1,price_v2 --rungs L1,L2`. `run_price_model.py`
+`--out-dir outputs/results/hourly_model_v2` -- what `make price-model` runs,
+alongside `--versions hourly_model_v1,hourly_model_v2 --rungs L1,L2`. `run_price_model.py`
 also takes harness-parameter flags -- `--train-span-days`/`--test-start`/
 `--test-end`/`--window`/`--refit-every`/`--drop-features`, gated behind a
 required `--tag` so two different sweeps never overwrite each other's
 output files (never MeritOrderForecaster's own structure). New measurements against
-the hourly model run against `price_v2`, not against an ad hoc
+the hourly model run against `hourly_model_v2`, not against an ad hoc
 reconfiguration of `MeritOrderForecaster` (it now only supports
-`price_v2`'s own path, with one deliberate ablation exception:
+`hourly_model_v2`'s own path, with one deliberate ablation exception:
 `hide_from_tree`/`--drop-features` can hide a column from the *inner*
 LightGBM tree while SRMC/beta are still computed from it as always).
 Completed Sprint 7 studies (merit-order
@@ -76,5 +76,5 @@ with their result, in `outputs/price_model_development.md`.
 ## Where things live
 
 - **Specs and implementation logs:** `docs/*.md` (gitignored, not on GitHub — read them locally for the "why" behind a given sprint; `docs/sprint7_step7_0_spec.md` + `docs/sprint7_step7_0_log.md` for this restructure).
-- **Reports and results meant to be public:** `outputs/` (checked in) — `outputs/results/` (CSV snapshots the README/dashboard read from, incl. `outputs/results/price_v2/` and the public `outputs/results/model_card_hourly_price.md`), `outputs/assets/` (figures), `outputs/model_validation_report.md`, `outputs/price_model_development.md`.
+- **Reports and results meant to be public:** `outputs/` (checked in) — `outputs/results/` (CSV snapshots the README/dashboard read from, incl. `outputs/results/hourly_model_v2/` and the public `outputs/results/model_card_hourly_price.md`), `outputs/assets/` (figures), `outputs/model_validation_report.md`, `outputs/price_model_development.md`.
 - **Data:** `data/README.md` documents provenance (which file came from where, which script regenerates it) for the artifacts copied from the sibling repo in Sprint 7.0 (quarter-hourly prices, weather archive, renewables forecasts, weather/ENTSO-E caches).

@@ -1,4 +1,4 @@
-# Hourly price model: from `price_v1` to `price_v2`
+# Hourly price model: from `hourly_model_v1` to `hourly_model_v2`
 
 Status: 2026-10-24. Research only: this is a summary of Sprint 7's
 investigation, not a statement about live operation. Nothing here
@@ -34,17 +34,17 @@ That observation started the investigation summarised below.
 
 ## 2. What was tested
 
-| Study | Question | Result | Consequence for `price_v2` | Evidence |
+| Study | Question | Result | Consequence for `hourly_model_v2` | Evidence |
 |---|---|---|---|---|
-| Merit-order structure | Does the gas pass-through strengthen with residual load (RL)? | β rises ~monotonically from ~0.4 (RL<0) to ~2.0 (top bin, gas-only SRMC) | Confirms the structure `price_v2`'s target transform is built on | [`merit_order_beta_by_year_bin.csv`](https://github.com/soentkeblindow/energy-price-forecast-risk-validation/blob/sprint7-studies/outputs/results/merit_order_beta_by_year_bin.csv) |
+| Merit-order structure | Does the gas pass-through strengthen with residual load (RL)? | β rises ~monotonically from ~0.4 (RL<0) to ~2.0 (top bin, gas-only SRMC) | Confirms the structure `hourly_model_v2`'s target transform is built on | [`merit_order_beta_by_year_bin.csv`](https://github.com/soentkeblindow/energy-price-forecast-risk-validation/blob/sprint7-studies/outputs/results/merit_order_beta_by_year_bin.csv) |
 | Variants A/B/C | Does pulling β(RL)·SRMC out of the tree as a target transform help? | B beats A in the stress slice (RMSE 32.4→27.2, bias +9.4→−4.4); C (`linear_tree`) is far worse everywhere | B adopted as the base model | [`merit_order_variants_dm_test.csv`](https://github.com/soentkeblindow/energy-price-forecast-risk-validation/blob/sprint7-studies/outputs/results/merit_order_variants_dm_test.csv) |
 | Error decomposition (incl. Oracle + objective) | What does the live feature set / weather reconstruction / objective function cost? | L0→L1 free (p=0.70/0.11); L1→L2 costs 1.1-1.6 EUR/MWh RMSE (~5%, p<0.01); **actual** renewables (Oracle) is *worse* than forecasts, not better (p=0.02); `quantile` vs `l2` not significantly different | `core_gas` (L1) feature set kept; L2 (NWP) is the live-matching reference rung, not actuals; median objective kept | [`error_decomposition_ladder_metrics.csv`](https://github.com/soentkeblindow/energy-price-forecast-risk-validation/blob/sprint7-studies/outputs/results/error_decomposition_ladder_metrics.csv) |
 | Export diagnosis (ex post) | Is the error related to scheduled net exports? | Bias rises with exports at low/mid RL (p<0.001); all 3 October outlier days in the top export quintile | Real pattern, but not usable as a feature with today's data (flows/prices are jointly determined) — not implemented | [`export_diagnosis_expost_regression.csv`](https://github.com/soentkeblindow/energy-price-forecast-risk-validation/blob/sprint7-studies/outputs/results/export_diagnosis_expost_regression.csv) |
 | Seasonal training window | Does adding last year's same weeks to the 90-day window help in autumn? | Sep-Nov RMSE needed to drop ≥3%; rose +3.6% (model A), dropped only 1.3% (model B) | Not adopted; 90-day rolling window kept | [`seasonal_similar_day_metrics_by_month.csv`](https://github.com/soentkeblindow/energy-price-forecast-risk-validation/blob/sprint7-studies/outputs/results/seasonal_similar_day_metrics_by_month.csv) |
 | Similar-day feature | Does a holiday-adjusted "similar day" price feature reduce the Monday bias? | Needed to shrink ≥1/3; shrank only 13.6% (A) or grew 2.9% worse (B) | Not adopted | [`seasonal_similar_day_metrics.csv`](https://github.com/soentkeblindow/energy-price-forecast-risk-validation/blob/sprint7-studies/outputs/results/seasonal_similar_day_metrics.csv) |
 | French day-ahead prices | Does France's price as a feature help via export/price-echo? | Both pre-registered criteria missed by a wide margin (RMSE not lower, p=0.864; export-slope reduction −5.8% vs. required −33%) | Not adopted | [`fr_price_features_assessment.csv`](https://github.com/soentkeblindow/energy-price-forecast-risk-validation/blob/sprint7-studies/outputs/results/fr_price_features_assessment.csv) |
-| Calendar rule for β | Can β re-estimation be made reproducible across run start dates? | Mechanical fix (anchor to the 1st of the month instead of the run's own start); proven bitwise-identical across two runs with different start dates | Adopted — `price_v2` always re-estimates β at calendar-month boundaries | `common/models/merit_order_forecaster.py`'s own reproducibility test |
-| Selection: B / B-full / B-roll | Which SRMC definition and β window? | All three statistically equivalent (no significant DM test among them) | Owner chose `B-full-roll` (gas+CO2 SRMC, 3-year rolling β window) on economic/physical grounds, not measured performance — see the model card's Configuration table for the full reasoning | [`price_v2/reference_dm_test.csv`](results/price_v2/reference_dm_test.csv) |
+| Calendar rule for β | Can β re-estimation be made reproducible across run start dates? | Mechanical fix (anchor to the 1st of the month instead of the run's own start); proven bitwise-identical across two runs with different start dates | Adopted — `hourly_model_v2` always re-estimates β at calendar-month boundaries | `common/models/merit_order_forecaster.py`'s own reproducibility test |
+| Selection: B / B-full / B-roll | Which SRMC definition and β window? | All three statistically equivalent (no significant DM test among them) | Owner chose `B-full-roll` (gas+CO2 SRMC, 3-year rolling β window) on economic/physical grounds, not measured performance — see the model card's Configuration table for the full reasoning | [`hourly_model_v2/reference_dm_test.csv`](results/hourly_model_v2/reference_dm_test.csv) |
 
 No study was neu gerechnet for this report; all numbers above are taken
 from each study's own, already-measured result, at the configuration
@@ -53,7 +53,7 @@ criterion.
 
 ## 3. Reference results
 
-`price_v2` (`B-full-roll`) against `price_v1` (the previous model, no
+`hourly_model_v2` (`B-full-roll`) against `hourly_model_v1` (the previous model, no
 target transform), walk-forward, identical fold list, 2024-06-15 to
 2026-10-20 (819 delivery days). **L2** (own weather-reconstructed
 wind/solar) is the headline number — it matches the live information
@@ -61,7 +61,7 @@ state. **L1** (TSO day-ahead forecasts) is reported alongside as an
 explicit **upper bound**: those forecasts are not available at gate
 closure.
 
-| Period | Metric | `price_v1` L1 (upper bound) | `price_v2` L1 (upper bound) | `price_v1` L2 | `price_v2` L2 |
+| Period | Metric | `hourly_model_v1` L1 (upper bound) | `hourly_model_v2` L1 (upper bound) | `hourly_model_v1` L2 | `hourly_model_v2` L2 |
 |---|---|---|---|---|---|
 | Overall | RMSE | 24.30 | 23.99 | 25.49 | 25.44 |
 | Overall | Bias | 1.28 | 0.69 | 1.27 | 0.61 |
@@ -70,7 +70,7 @@ closure.
 | Autumn 2026 | RMSE | 29.01 | 28.30 | 30.81 | 29.46 |
 | Autumn 2026 | Bias | 1.91 | −1.09 | 1.99 | −1.23 |
 
-`price_v2` is not significantly different from `price_v1` anywhere (DM
+`hourly_model_v2` is not significantly different from `hourly_model_v1` anywhere (DM
 test, squared error, daily block): L1 overall p=0.14, autumn/winter
 p=0.44, autumn 2026 p=0.68; L2 overall p=0.82, autumn/winter p=0.90,
 autumn 2026 p=0.33. The L1→L2 cost (TSO forecasts vs. the own weather
@@ -82,9 +82,9 @@ tests itself (that comparison logic was deliberately moved out of the
 model-running entry point); these figures are not currently regenerated
 by any script.
 
-![price_v2: beta(RL) by anchor month](assets/price_v2_beta.png)
+![hourly_model_v2: beta(RL) by anchor month](assets/hourly_model_v2_beta.png)
 
-Full tables: [`outputs/results/price_v2/`](results/price_v2/).
+Full tables: [`outputs/results/hourly_model_v2/`](results/hourly_model_v2/).
 Predictions/metrics source: `scripts/model_risk_regimes/run_price_model.py`
 / `build_price_beta_table.py`.
 
@@ -93,7 +93,7 @@ Predictions/metrics source: `scripts/model_risk_regimes/run_price_model.py`
 - In the anchor month 2023-12, β is 0 in all 11 bins: the raw per-bin
   estimates are not monotonic in residual load that month (despite
   enough observations per bin), and isotonic smoothing pulls the whole
-  curve to its floor. `price_v2` was effectively untransformed that one
+  curve to its floor. `hourly_model_v2` was effectively untransformed that one
   month.
 - In autumn 2026 specifically, `B-full-roll`'s rolling 3-year β window
   is significantly *worse* than the expanding-window alternative

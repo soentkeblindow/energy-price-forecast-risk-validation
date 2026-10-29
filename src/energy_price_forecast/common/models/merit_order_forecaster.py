@@ -1,7 +1,7 @@
-"""`price_v2` (Sprint 7 Step 7.6): a target-transform wrapper around
+"""`hourly_model_v2` (Sprint 7 Step 7.6): a target-transform wrapper around
 ``LGBMForecaster`` that pulls a residual-load-dependent gas pass-through
 (``beta(RL)``) out of the tree before fitting, and adds it back at predict
-time. SRMC = gas + CO2; see ``common.models.price_model.PRICE_V2`` for the
+time. SRMC = gas + CO2; see ``common.models.price_model.HOURLY_MODEL_V2`` for the
 full, named configuration.
 """
 
@@ -22,7 +22,7 @@ SRMC_COLUMNS: tuple[str, str] = ("ttf_gas_lag_48h", "eua_co2_lag_48h")
 
 
 class MeritOrderForecaster:
-    """``price_v2``: ``LGBMForecaster`` wrapped with a residual-load-dependent
+    """``hourly_model_v2``: ``LGBMForecaster`` wrapped with a residual-load-dependent
     gas pass-through target transform (``price - beta(RL)*SRMC``, tree on
     the residual). SRMC is gas + CO2 (``srmc_gas_full``): the feature
     matrix passed to ``fit``/``predict`` and the ``long_history`` side
@@ -42,7 +42,7 @@ class MeritOrderForecaster:
 
     ``beta_window_days`` selects the pool: ``None`` is an expanding pool
     from all history before the anchor; an integer is a rolling N-day pool
-    (``price_v2`` uses a 3-year rolling window). Crisis-period rows
+    (``hourly_model_v2`` uses a 3-year rolling window). Crisis-period rows
     (``is_crisis``) are always excluded from the pool. The resulting
     per-bin estimates are isotonically smoothed and clamped to
     ``[0, BETA_CLAMP_MAX]`` (fixed MW bins, ``common.features.merit_order
@@ -54,7 +54,7 @@ class MeritOrderForecaster:
     directly (bypassing this class) to build the monthly beta reference
     table (``scripts/model_risk_regimes/build_price_beta_table.py``).
 
-    ``hide_from_tree``: ablation-only, defaults to ``()`` (price_v2's
+    ``hide_from_tree``: ablation-only, defaults to ``()`` (hourly_model_v2's
     canonical, bit-identical behaviour -- the inner tree sees every column
     of ``x_train``/``x_test``, including ``SRMC_COLUMNS``). SRMC is always
     computed from ``x`` itself (``_bin_and_srmc``), never from

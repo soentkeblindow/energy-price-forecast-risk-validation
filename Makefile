@@ -12,8 +12,8 @@ help:
 	@echo "  report-assets   Regenerate README figures/tables from outputs/results/ (no API key needed)"
 	@echo "  dm-test         Run the Diebold-Mariano significance test (no API key needed)"
 	@echo "  requirements    Regenerate requirements.txt for Streamlit Community Cloud deployment"
-	@echo "  price-model     Recompute the price_v1/price_v2 reference run (outputs/results/price_v2/)"
-	@echo "  price-beta      Extend price_v2's monthly beta(RL) table and figure by one more anchor month"
+	@echo "  price-model     Recompute the hourly_model_v1/hourly_model_v2 reference run (outputs/results/hourly_model_v2/)"
+	@echo "  price-beta      Extend hourly_model_v2's monthly beta(RL) table and figure by one more anchor month"
 	@echo "  renewables-update  Extend the renewables L2 feature store with fresh data (merge, not overwrite)"
 
 data:
@@ -44,7 +44,7 @@ requirements:
 	uv export --format requirements.txt --extra dashboard --no-dev --no-hashes -o src/energy_price_forecast/model_risk_regimes/dashboard/requirements.txt
 
 price-model:
-	uv run python scripts/model_risk_regimes/run_price_model.py --versions price_v1,price_v2 --rungs L1,L2 --out-dir outputs/results/price_v2
+	uv run python scripts/model_risk_regimes/run_price_model.py --versions hourly_model_v1,hourly_model_v2 --rungs L1,L2 --out-dir outputs/results/hourly_model_v2
 
 price-beta:
 	uv run python scripts/model_risk_regimes/build_price_beta_table.py

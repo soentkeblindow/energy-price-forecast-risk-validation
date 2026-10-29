@@ -1,9 +1,9 @@
 """Sprint 7 Step 7.7, Teil C.3 (docs/sprint7_step7_7_spec.md, section 4, C.3).
 
-Monthly beta(RL) reference table for `price_v2` only (replaces
+Monthly beta(RL) reference table for `hourly_model_v2` only (replaces
 `build_beta_monthly_table.py`, which covered several candidate
 configurations during Step 7.6's selection measurement). Settings are read
-exclusively from `common.models.price_model.PRICE_V2`.
+exclusively from `common.models.price_model.HOURLY_MODEL_V2`.
 
 A single-anchor-month call (``--anchor-month``) appends just that month to
 the existing table without touching the other rows, so the table can be
@@ -30,7 +30,7 @@ from energy_price_forecast.common.features.merit_order import (
     smooth_beta_isotonic,
 )
 from energy_price_forecast.common.market_time import LOCAL_TZ
-from energy_price_forecast.common.models.price_model import PRICE_V2
+from energy_price_forecast.common.models.price_model import HOURLY_MODEL_V2
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -49,10 +49,10 @@ def _month_anchors(first: pd.Timestamp, last_local_day: pd.Timestamp) -> list[pd
     return anchors
 
 
-def build_price_v2_beta_table(
+def build_hourly_model_v2_beta_table(
     long_history: pd.DataFrame, anchors: list[pd.Timestamp]
 ) -> pd.DataFrame:
-    """One row per (anchor month, RL bin), using exactly PRICE_V2's own
+    """One row per (anchor month, RL bin), using exactly HOURLY_MODEL_V2's own
     settings (``srmc_definition="gas_full"``, absolute RL bins,
     ``beta_window_days`` from the config).
     """
@@ -63,7 +63,7 @@ def build_price_v2_beta_table(
             anchor,
             srmc_definition="gas_full",
             rl_measure="absolute",
-            window_days=PRICE_V2.beta_window_days,
+            window_days=HOURLY_MODEL_V2.beta_window_days,
         )
         smoothed = smooth_beta_isotonic(raw["beta_raw"], upper=CLAMP_THRESHOLD)
         for label in RL_BIN_LABELS:
@@ -77,7 +77,7 @@ def build_price_v2_beta_table(
                     "beta_raw": raw.loc[label, "beta_raw"],
                     "beta_smoothed": smoothed.loc[label],
                     "clamp_flag": bool(raw.loc[label, "beta_raw"] > CLAMP_THRESHOLD),
-                    "model_version": "price_v2",
+                    "model_version": "hourly_model_v2",
                 }
             )
     return pd.DataFrame(rows)
@@ -116,7 +116,7 @@ def _draw_figure(table: pd.DataFrame, fig_path: Path) -> None:
     ax.axhline(1.5, color="grey", linestyle="--", linewidth=0.8)
     ax.set_xlabel("RL bin")
     ax.set_ylabel("beta_smoothed")
-    ax.set_title("price_v2: beta(RL) by anchor month")
+    ax.set_title("hourly_model_v2: beta(RL) by anchor month")
     ax.legend(loc="upper left")
     fig.tight_layout()
     fig_path.parent.mkdir(parents=True, exist_ok=True)
@@ -130,9 +130,9 @@ def _parse_args() -> argparse.Namespace:
         "--data-path", type=Path, default=Path("data/interim/hourly_merit_order.parquet")
     )
     p.add_argument(
-        "--out-csv", type=Path, default=Path("outputs/results/price_v2/beta_monthly.csv")
+        "--out-csv", type=Path, default=Path("outputs/results/hourly_model_v2/beta_monthly.csv")
     )
-    p.add_argument("--fig-path", type=Path, default=Path("outputs/assets/price_v2_beta.png"))
+    p.add_argument("--fig-path", type=Path, default=Path("outputs/assets/hourly_model_v2_beta.png"))
     p.add_argument(
         "--compare-csv",
         type=Path,
@@ -164,7 +164,7 @@ def main() -> None:
         "anchors: %s .. %s (%d months)", anchors[0].date(), anchors[-1].date(), len(anchors)
     )
 
-    new_rows = build_price_v2_beta_table(long_history, anchors)
+    new_rows = build_hourly_model_v2_beta_table(long_history, anchors)
 
     args.out_csv.parent.mkdir(parents=True, exist_ok=True)
     existing = pd.read_csv(args.out_csv) if args.out_csv.exists() else None

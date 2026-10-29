@@ -1,4 +1,4 @@
-"""Main entry point for running `price_v2` (`common.models.price_model`).
+"""Main entry point for running `hourly_model_v2` (`common.models.price_model`).
 
 Runs the requested model version(s)/rung(s), writes out predictions and
 per-combination metrics (RMSE/MAE/bias, several breakdowns). No model-vs-
@@ -9,26 +9,27 @@ the determinism check (same model, same data, run twice, must match
 exactly) -- that is a self-check of this runner, not a comparison between
 two different things.
 
-By default, runs only `price_v2` on the L2 rung -- wind/solar/residual-
-load/renewable-share from our own NWP reconstruction, i.e. the live
-information state, the only one that matters day to day. `price_v1`
-(the pre-price_v2 baseline) and L1 (the same columns from ENTSO-E's own
-day-ahead forecasts, an academic upper bound never available live) are
-opt-in via --versions/--rungs, for when you want all four combinations'
-predictions/metrics side by side (what `make price-model` runs, passing
---versions price_v1,price_v2 --rungs L1,L2).
+By default, runs only `hourly_model_v2` on the L2 rung -- wind/solar/
+residual-load/renewable-share from our own NWP reconstruction, i.e. the
+live information state, the only one that matters day to day.
+`hourly_model_v1` (the pre-`hourly_model_v2` baseline) and L1 (the same
+columns from ENTSO-E's own day-ahead forecasts, an academic upper bound
+never available live) are opt-in via --versions/--rungs, for when you
+want all four combinations' predictions/metrics side by side (what
+`make price-model` runs, passing --versions
+hourly_model_v1,hourly_model_v2 --rungs L1,L2).
 
 Every run writes to data/processed/price_model_runs/ (gitignored) by
 default, no exceptions -- there is no "canonical" invocation this script
-treats specially. Pass --out-dir outputs/results/price_v2 yourself when
-you deliberately want to publish a run's output into the public,
+treats specially. Pass --out-dir outputs/results/hourly_model_v2 yourself
+when you deliberately want to publish a run's output into the public,
 checked-in results tree; that is a conscious choice for the repo owner to
 make, not something this script infers from which flags happen to be set.
 
 --train-span-days/--test-start/--test-end/--window/--refit-every override
 the walk-forward harness (never MeritOrderForecaster's own structure --
 SRMC definition, beta window/bins stay exactly as fixed in Step 7.7 Teil
-B, common.models.price_model.PRICE_V2) and require --tag.
+B, common.models.price_model.HOURLY_MODEL_V2) and require --tag.
 """
 
 from __future__ import annotations
@@ -63,7 +64,11 @@ from energy_price_forecast.common.features.merit_order import (
 from energy_price_forecast.common.features.subset import drop_features
 from energy_price_forecast.common.market_time import LOCAL_TZ, month_start_local
 from energy_price_forecast.common.models.merit_order_forecaster import SRMC_COLUMNS
-from energy_price_forecast.common.models.price_model import PRICE_V1, PRICE_V2, build_price_model
+from energy_price_forecast.common.models.price_model import (
+    HOURLY_MODEL_V1,
+    HOURLY_MODEL_V2,
+    build_price_model,
+)
 from energy_price_forecast.model_risk_regimes.features.l2_matrix import build_l2_matrix
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
@@ -82,7 +87,7 @@ A2_INPUT_FILES: tuple[Path, ...] = (
 )
 RENEWABLES_FILE = Path("data/processed/renewables_forecast_rolling365_l2.parquet")
 
-_VALID_VERSIONS: tuple[str, ...] = ("price_v1", "price_v2")
+_VALID_VERSIONS: tuple[str, ...] = ("hourly_model_v1", "hourly_model_v2")
 _VALID_RUNGS: tuple[str, ...] = ("L1", "L2")
 
 
@@ -91,7 +96,7 @@ def _parse_scope(
 ) -> list[str]:
     """Parse a comma-separated ``--versions``/``--rungs`` value into a
     non-empty subset of ``valid``, in ``valid``'s own order (so e.g.
-    ``"price_v2,price_v1"`` and ``"price_v1,price_v2"`` are equivalent).
+    ``"hourly_model_v2,hourly_model_v1"`` and ``"hourly_model_v1,hourly_model_v2"`` are equivalent).
     """
     requested = {v.strip() for v in value.split(",") if v.strip()}
     invalid = requested - set(valid)
@@ -149,11 +154,11 @@ def _run_reference_backtest(
 ) -> pd.DataFrame:
     """Drive ``model`` through ``folds``. On every ``refit_every``-th fold
     the model is refit on that fold's train slice; the default of 1 matches
-    the fixed daily-refit cadence both price_v1/price_v2 have always used
+    the fixed daily-refit cadence both hourly_model_v1/hourly_model_v2 have always used
     (same gating as ``common.evaluation.walkforward.run_backtest``, kept
     separate here because this function additionally captures
     ``predict_components`` output, which ``run_backtest`` cannot). If
-    ``model`` exposes ``predict_components`` (price_v2's
+    ``model`` exposes ``predict_components`` (hourly_model_v2's
     MeritOrderForecaster), captures tree_pred/beta/srmc/rl_bin/anchor_month
     alongside y_pred directly from the same pass -- no second, post-hoc
     computation. Logs progress at 25/50/75/100% of folds, same milestone
@@ -284,7 +289,7 @@ def _parse_args() -> argparse.Namespace:
         default=None,
         help="Where reference_metrics/_predictions/data_snapshot are written. "
         "Default: data/processed/price_model_runs (gitignored) for every run, no "
-        "exceptions. Point this at outputs/results/price_v2 yourself (e.g. for `make "
+        "exceptions. Point this at outputs/results/hourly_model_v2 yourself (e.g. for `make "
         "price-model`) when you deliberately want to publish a run's output there.",
     )
     p.add_argument("--preds-dir", type=Path, default=Path("data/processed/price_reference_preds"))
@@ -324,11 +329,11 @@ def _parse_args() -> argparse.Namespace:
     )
     p.add_argument(
         "--versions",
-        default="price_v2",
-        help="Comma-separated subset of price_v1,price_v2 to run. Default: price_v2 "
-        "only -- the live model; price_v1 vs price_v2 was already decided (Step 7.6). "
-        "Pass price_v1,price_v2 to get both versions' predictions/metrics in one run "
-        "(what `make price-model` runs).",
+        default="hourly_model_v2",
+        help="Comma-separated subset of hourly_model_v1,hourly_model_v2 to run. Default: "
+        "hourly_model_v2 only -- the live model; hourly_model_v1 vs hourly_model_v2 was "
+        "already decided (Step 7.6). Pass hourly_model_v1,hourly_model_v2 to get both "
+        "versions' predictions/metrics in one run (what `make price-model` runs).",
     )
     p.add_argument(
         "--rungs",
@@ -354,7 +359,7 @@ def _parse_args() -> argparse.Namespace:
         default="",
         help="Comma-separated feature columns to drop from the tree's input matrix "
         "in memory before fitting (ablation) -- e.g. ttf_gas_lag_48h,eua_co2_lag_48h to "
-        "test whether price_v2's tree still needs its own copy of gas/CO2 now that the "
+        "test whether hourly_model_v2's tree still needs its own copy of gas/CO2 now that the "
         "merit-order transform already models the pass-through via beta(RL)*SRMC (SRMC "
         "comes from the separate long_history side channel, untouched by this flag). "
         "Same drop_features helper backtest.py uses. Requires --tag.",
@@ -388,7 +393,7 @@ def main() -> None:
     args = _parse_args()
 
     # is_full_scope is needed below for the output-filename suffix logic
-    # (an unsuffixed run is only ever the complete price_v1+price_v2/L1+L2
+    # (an unsuffixed run is only ever the complete hourly_model_v1+hourly_model_v2/L1+L2
     # comparison).
     is_full_scope = set(args.versions) == set(_VALID_VERSIONS) and set(args.rungs) == set(
         _VALID_RUNGS
@@ -412,14 +417,14 @@ def main() -> None:
 
     hide_from_tree: tuple[str, ...] = ()
     if args.drop_features:
-        # price_v2's MeritOrderForecaster computes SRMC from these exact two
+        # hourly_model_v2's MeritOrderForecaster computes SRMC from these exact two
         # columns of the feature matrix itself (never from long_history --
         # that side channel only feeds the beta(RL) regression), so simply
-        # dropping them from price_v2's matrices would break SRMC, not
+        # dropping them from hourly_model_v2's matrices would break SRMC, not
         # ablate a redundant tree feature. They're routed into
         # MeritOrderForecaster's own hide_from_tree instead (SRMC/beta
         # computed as always, just not also exposed to the inner tree).
-        # price_v1 has no such concept -- for it, these are ordinary
+        # hourly_model_v1 has no such concept -- for it, these are ordinary
         # columns, dropped like any other requested one.
         srmc_requested = [c for c in args.drop_features if c in SRMC_COLUMNS]
         matrix_drop = [c for c in args.drop_features if c not in SRMC_COLUMNS]
@@ -437,8 +442,8 @@ def main() -> None:
                 f"--drop-features: {unknown} not found in any feature matrix "
                 f"(known columns: {sorted(known)})"
             )
-        # strict=False: price_v1's matrices (l1_matrix/l2_matrix) never carry
-        # eua_co2_lag_48h in the first place (only price_v2's .assign()'d
+        # strict=False: hourly_model_v1's matrices (l1_matrix/l2_matrix) never carry
+        # eua_co2_lag_48h in the first place (only hourly_model_v2's .assign()'d
         # copies do) -- a column absent from one matrix but present in
         # another is expected, not an error (the unknown-name check above
         # already caught genuine typos).
@@ -451,7 +456,7 @@ def main() -> None:
             "dropped %d feature(s) for ablation: %s%s",
             len(args.drop_features),
             args.drop_features,
-            f" (price_v2: {list(hide_from_tree)} hidden from the tree only, SRMC/beta "
+            f" (hourly_model_v2: {list(hide_from_tree)} hidden from the tree only, SRMC/beta "
             f"still computed from them)"
             if hide_from_tree
             else "",
@@ -462,10 +467,10 @@ def main() -> None:
 
     # --- Harness parameters (default: identical to the Step 7.7 reference) --
     config_v1 = dataclasses.replace(
-        PRICE_V1, train_span_days=args.train_span_days, refit_every=args.refit_every
+        HOURLY_MODEL_V1, train_span_days=args.train_span_days, refit_every=args.refit_every
     )
     config_v2 = dataclasses.replace(
-        PRICE_V2,
+        HOURLY_MODEL_V2,
         train_span_days=args.train_span_days,
         refit_every=args.refit_every,
         hide_from_tree=hide_from_tree,
@@ -516,12 +521,12 @@ def main() -> None:
     # --- Requested (version, rung) combinations ------------------------------
     args.preds_dir.mkdir(parents=True, exist_ok=True)
     matrices = {
-        ("price_v1", "L1"): l1_matrix,
-        ("price_v1", "L2"): l2_matrix,
-        ("price_v2", "L1"): l1_matrix_v2,
-        ("price_v2", "L2"): l2_matrix_v2,
+        ("hourly_model_v1", "L1"): l1_matrix,
+        ("hourly_model_v1", "L2"): l2_matrix,
+        ("hourly_model_v2", "L1"): l1_matrix_v2,
+        ("hourly_model_v2", "L2"): l2_matrix_v2,
     }
-    configs = {"price_v1": config_v1, "price_v2": config_v2}
+    configs = {"hourly_model_v1": config_v1, "hourly_model_v2": config_v2}
     runs = {
         key: (build_price_model(configs[key[0]], long_history), matrix)
         for key, matrix in matrices.items()
@@ -548,11 +553,11 @@ def main() -> None:
     fold_counts = {k: v["delivery_day"].nunique() for k, v in predictions.items()}
     logger.info("delivery-day counts per run (must match): %s", fold_counts)
 
-    # --- Determinism check: price_v2 L2, first 20 folds, run twice ------------
-    # Runs whenever price_v2/L2 was actually computed this run.
-    if ("price_v2", "L2") not in predictions:
+    # --- Determinism check: hourly_model_v2 L2, first 20 folds, run twice ------------
+    # Runs whenever hourly_model_v2/L2 was actually computed this run.
+    if ("hourly_model_v2", "L2") not in predictions:
         logger.info(
-            "determinism check skipped -- needs price_v2/L2, not computed in this run "
+            "determinism check skipped -- needs hourly_model_v2/L2, not computed in this run "
             "(versions=%s, rungs=%s)",
             args.versions,
             args.rungs,
@@ -569,7 +574,7 @@ def main() -> None:
         )
         determinism_diff = float((probe_a["y_pred"] - probe_b["y_pred"]).abs().max())
         logger.info(
-            "determinism check [price_v2 L2, first 20 folds]: max |diff| = %.3e -- %s",
+            "determinism check [hourly_model_v2 L2, first 20 folds]: max |diff| = %.3e -- %s",
             determinism_diff,
             "PASS" if determinism_diff == 0.0 else "RUECKFRAGE: FAILED",
         )
@@ -714,16 +719,16 @@ def main() -> None:
             MAX_PREDICTIONS_MB,
         )
 
-    # --- Parity check: tree_pred + beta*srmc == y_pred for price_v2 ---------
+    # --- Parity check: tree_pred + beta*srmc == y_pred for hourly_model_v2 ---------
     for rung in args.rungs:
-        key = ("price_v2", rung)
+        key = ("hourly_model_v2", rung)
         if key not in predictions:
             continue
         preds = predictions[key]
         reconstructed = preds["tree_pred"] + preds["beta"] * preds["srmc"]
         max_parity_diff = float((reconstructed - preds["y_pred"]).abs().max())
         logger.info(
-            "parity check [price_v2 %s]: max |tree_pred + beta*srmc - y_pred| = %.3e",
+            "parity check [hourly_model_v2 %s]: max |tree_pred + beta*srmc - y_pred| = %.3e",
             rung,
             max_parity_diff,
         )

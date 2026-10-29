@@ -8,16 +8,16 @@ live operation or about the sibling repository (`day-ahead-forecast-live-ops`)
 
 ## 1. Identity
 
-| | `price_v1` | `price_v2` |
+| | `hourly_model_v1` | `hourly_model_v2` |
 |---|---|---|
-| Name | price_v1 | price_v2 (B-full-roll) |
+| Name | hourly_model_v1 | hourly_model_v2 (B-full-roll) |
 | Status | superseded | current |
 | Date of this determination | — | 2026-10-23 |
 | Reference | Step 7.2 (merit-order structure measurement) | Step 7.6, Part B (comparison measurement) + owner decision |
 
-`price_v2` was selected in Sprint 7 Step 7.6: Part B measured three
+`hourly_model_v2` was selected in Sprint 7 Step 7.6: Part B measured three
 candidates (`B`, `B-full`, `B-roll`) against the historical reference
-`A` (= `price_v1`) and found them statistically equivalent (no
+`A` (= `hourly_model_v1`) and found them statistically equivalent (no
 Diebold-Mariano test between the candidates significant). The owner then
 chose `B-full-roll` — a combination not itself run as a separate
 candidate in Part B — on economic and physical grounds, not on measured
@@ -48,15 +48,15 @@ the note above.
 
 ## 3. Configuration
 
-"Best performance" is not cited as a rationale for any `price_v2` row
+"Best performance" is not cited as a rationale for any `hourly_model_v2` row
 below: Step 7.6 Part B found `B`, `B-full` and `B-roll` statistically
 indistinguishable (no significant DM test among them). Where a
-`price_v2` setting differs from `price_v1`, the rationale is economic or
+`hourly_model_v2` setting differs from `hourly_model_v1`, the rationale is economic or
 physical reasoning, stated explicitly by the owner after Part B.
 
-| Setting | `price_v1` | `price_v2` | Rationale | Evidence |
+| Setting | `hourly_model_v1` | `hourly_model_v2` | Rationale | Evidence |
 |---|---|---|---|---|
-| Base model | Plain LightGBM, no target transform | Target-transform model: `price − β(RL)·SRMC`, LightGBM on the residual | The transform passed all of Step 7.2's criteria; `price_v2` builds on it | `price_model_development.md`, section 2 ("Variants A/B/C"); `src/energy_price_forecast/common/models/merit_order_forecaster.py` |
+| Base model | Plain LightGBM, no target transform | Target-transform model: `price − β(RL)·SRMC`, LightGBM on the residual | The transform passed all of Step 7.2's criteria; `hourly_model_v2` builds on it | `price_model_development.md`, section 2 ("Variants A/B/C"); `src/energy_price_forecast/common/models/merit_order_forecaster.py` |
 | SRMC definition | n/a (no transform) | `gas_full` (TTF gas + EUA CO2) | A gas plant's short-run marginal cost includes fuel and carbon; gas-only folds the CO2 share into β, where the 1.5 ceiling binds persistently in the top residual-load bin | owner decision; `price_model_development.md`, section 2 ("Selection: B/B-full/B-roll"); `src/energy_price_forecast/common/features/merit_order.py::srmc_gas_full` |
 | RL segmentation | n/a | Absolute, fixed MW bins, frozen on 2019-2020 deciles | Not re-measured in Step 7.6; owner decision based on Step 7.2's evidence: the relative-bin sensitivity (`B-rel`) was significantly worse than the plain reference in the post-crisis period (DM test, daily p=0.0162, hourly p=0.0046, higher loss for `B-rel`) — no direct `B-rel`-vs-`B` test exists, this is the only available evidence | [`merit_order_variants_dm_test.csv`](https://github.com/soentkeblindow/energy-price-forecast-risk-validation/blob/sprint7-studies/outputs/results/merit_order_variants_dm_test.csv) (`B_rel_vs_A`, `post_crisis`); `src/energy_price_forecast/common/features/merit_order.py::RL_BIN_EDGES_MW` |
 | Beta window | n/a | Rolling 3 years (`beta_window_days=3*365`), re-anchored monthly | The merit-order fleet is not stationary (2023 nuclear phase-out, coal held in reserve, storage build-out); a rolling window tracks the current fleet rather than averaging over the whole history | owner decision; `price_model_development.md`, section 2 ("Selection: B/B-full/B-roll") |
@@ -68,7 +68,7 @@ physical reasoning, stated explicitly by the owner after Part B.
 | Objective function | Median (`objective="quantile"`, α=0.5) | Median (`objective="quantile"`, α=0.5) | Step 7.3 found `l2` not significantly different | `price_model_development.md`, section 2 ("Error decomposition") |
 | Training window | 90 days, rolling | 90 days, rolling | A seasonal (60+30-day) window was tested in a separate investigation and found not to carry | `price_model_development.md`, section 2 ("Seasonal training window") |
 | Refit cadence | Daily | Daily | Unchanged | — |
-| Feature set | `core_gas` (`common/features/core_gas_columns.py::L1_COLUMNS`) | `core_gas` + `eua_co2_lag_48h` | The L0→L1 feature reduction was free of cost (Step 7.3); EUA is added for `price_v2`'s SRMC and, separately, as its own tree feature | `src/energy_price_forecast/common/features/core_gas_columns.py` |
+| Feature set | `core_gas` (`common/features/core_gas_columns.py::L1_COLUMNS`) | `core_gas` + `eua_co2_lag_48h` | The L0→L1 feature reduction was free of cost (Step 7.3); EUA is added for `hourly_model_v2`'s SRMC and, separately, as its own tree feature | `src/energy_price_forecast/common/features/core_gas_columns.py` |
 | LightGBM parameters | `n_estimators=300, learning_rate=0.05, num_leaves=31, min_child_samples=20, subsample=1.0, colsample_bytree=1.0` | same | Unchanged default | `src/energy_price_forecast/common/models/lgbm.py::_DEFAULT_PARAMS` |
 | Seed / parallelism | `random_state=0, n_jobs=1` | same | Unchanged default | `src/energy_price_forecast/common/models/lgbm.py`, `merit_order_forecaster.py` constructor defaults |
 
@@ -79,8 +79,8 @@ physical reasoning, stated explicitly by the owner after Part B.
 | DE-LU day-ahead price (`day_ahead_price`) | `DA_FIXED` | Target variable; also the `price` column in the beta long-history side channel |
 | Load forecast (`load_forecast_day_ahead`) | `DA_FORECAST` | ENTSO-E day-ahead forecast |
 | Wind onshore/offshore, solar forecast | `DA_FORECAST` | ENTSO-E day-ahead forecasts; residual load and renewable share are derived from these plus load |
-| TTF gas price (`ttf_gas_eur_per_mwh`, 48h lag) | `COMMODITY` | Daily settlement, known from the next day; underlies the SRMC in both `price_v2`'s gas-only and gas-full terms |
-| EUA CO2 price (`eua_co2_eur_per_t`, 48h lag) | `COMMODITY` | `price_v2` only (SRMC's CO2 term and a separate tree feature); real data starts 2021-10-19 |
+| TTF gas price (`ttf_gas_eur_per_mwh`, 48h lag) | `COMMODITY` | Daily settlement, known from the next day; underlies the SRMC in both `hourly_model_v2`'s gas-only and gas-full terms |
+| EUA CO2 price (`eua_co2_eur_per_t`, 48h lag) | `COMMODITY` | `hourly_model_v2` only (SRMC's CO2 term and a separate tree feature); real data starts 2021-10-19 |
 
 All inputs are hourly. The underlying price source is quarter-hourly from
 the market's own switch to 15-minute delivery; quarter-hour values are
@@ -88,7 +88,7 @@ volume-weighted-averaged into hourly values
 (`common/data/normalize.py::to_hourly_vwap`) before either model sees
 them — this model operates purely at hourly resolution, see Section 2.
 
-**Data stand** (Step 7.7, Teil C — [`data_snapshot.csv`](price_v2/data_snapshot.csv)):
+**Data stand** (Step 7.7, Teil C — [`data_snapshot.csv`](hourly_model_v2/data_snapshot.csv)):
 
 | File | Period | Rows | SHA-256 |
 |---|---|---|---|
@@ -104,7 +104,7 @@ number — it matches the live information state. **L1** (TSO day-ahead
 forecasts) is reported alongside as an explicit **upper bound**: those
 forecasts are not available at gate closure.
 
-| Period | Metric | `price_v1` L2 | `price_v2` L2 | DM p-value (`price_v2` vs. `price_v1`) |
+| Period | Metric | `hourly_model_v1` L2 | `hourly_model_v2` L2 | DM p-value (`hourly_model_v2` vs. `hourly_model_v1`) |
 |---|---|---|---|---|
 | Overall | RMSE / Bias | 25.49 / 1.27 | 25.44 / 0.61 | 0.82 (daily) |
 | Autumn/winter (Sep-Dec, all years) | RMSE / Bias | 32.01 / 1.09 | 31.95 / 0.19 | 0.90 (daily) |
@@ -112,23 +112,23 @@ forecasts are not available at gate closure.
 
 **L1, upper bound:**
 
-| Period | Metric | `price_v1` L1 | `price_v2` L1 | DM p-value (`price_v2` vs. `price_v1`) |
+| Period | Metric | `hourly_model_v1` L1 | `hourly_model_v2` L1 | DM p-value (`hourly_model_v2` vs. `hourly_model_v1`) |
 |---|---|---|---|---|
 | Overall | RMSE / Bias | 24.30 / 1.28 | 23.99 / 0.69 | 0.14 (daily) |
 | Autumn/winter | RMSE / Bias | 30.75 / 1.14 | 30.46 / 0.40 | 0.44 (daily) |
 | Autumn 2026 | RMSE / Bias | 29.01 / 1.91 | 28.30 / −1.09 | 0.68 (daily) |
 
-`price_v2` is not significantly different from `price_v1` in any period
+`hourly_model_v2` is not significantly different from `hourly_model_v1` in any period
 shown (all p-values above 0.1). The L1→L2 cost is highly significant for
 both versions (p<1e-6) and matches the error-decomposition study's own
-1.1-1.6 EUR/MWh range. Full tables: `outputs/results/price_v2/`.
+1.1-1.6 EUR/MWh range. Full tables: `outputs/results/hourly_model_v2/`.
 
 **Known limitations:**
 
 - In the anchor month 2023-12, β is 0 in all 11 bins: the raw per-bin
   estimates are not monotonic in residual load that month (despite
   enough observations per bin), and isotonic smoothing pulls the whole
-  curve to its floor. `price_v2` was effectively untransformed that one
+  curve to its floor. `hourly_model_v2` was effectively untransformed that one
   month.
 - In autumn 2026 specifically, `B-full-roll`'s rolling 3-year β window is
   significantly *worse* than the expanding-window alternative (`B-full`,

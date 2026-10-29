@@ -5,7 +5,7 @@ import pandas as pd
 
 from energy_price_forecast.common.market_time import LOCAL_TZ
 from scripts.model_risk_regimes.build_price_beta_table import (
-    build_price_v2_beta_table,
+    build_hourly_model_v2_beta_table,
     merge_beta_table,
 )
 
@@ -25,14 +25,14 @@ def _long_history(n_days: int) -> pd.DataFrame:
     )
 
 
-def test_build_price_v2_beta_table_one_row_per_anchor_and_bin() -> None:
+def test_build_hourly_model_v2_beta_table_one_row_per_anchor_and_bin() -> None:
     long_history = _long_history(n_days=400)
     anchors = [pd.Timestamp("2023-06-01", tz=LOCAL_TZ), pd.Timestamp("2023-07-01", tz=LOCAL_TZ)]
-    table = build_price_v2_beta_table(long_history, anchors)
+    table = build_hourly_model_v2_beta_table(long_history, anchors)
 
     assert len(table) == 2 * 11
     assert set(table["anchor_month"]) == {"2023-06", "2023-07"}
-    assert set(table["model_version"]) == {"price_v2"}
+    assert set(table["model_version"]) == {"hourly_model_v2"}
     assert list(table.columns) == [
         "anchor_month",
         "bin",
