@@ -1,17 +1,22 @@
 """Main entry point for running `price_v2` (`common.models.price_model`).
 
+Runs the requested model version(s)/rung(s), writes out predictions and
+per-combination metrics (RMSE/MAE/bias, several breakdowns). No model-vs-
+model or rung-vs-rung statistical comparison lives here -- that belongs in
+a separate analysis script that reads this script's own
+reference_predictions.parquet output. The one thing that does run here is
+the determinism check (same model, same data, run twice, must match
+exactly) -- that is a self-check of this runner, not a comparison between
+two different things.
+
 By default, runs only `price_v2` on the L2 rung -- wind/solar/residual-
 load/renewable-share from our own NWP reconstruction, i.e. the live
 information state, the only one that matters day to day. `price_v1`
 (the pre-price_v2 baseline) and L1 (the same columns from ENTSO-E's own
 day-ahead forecasts, an academic upper bound never available live) are
-opt-in via --versions/--rungs, for the one case that still needs them: the
-full price_v1-vs-price_v2 / L1-vs-L2 comparison (what `make price-model`
-runs, passing --versions price_v1,price_v2 --rungs L1,L2). The Step 7.6/7.7
-equality and determinism checks run whenever the combination they need
-is present (price_v2 L1 + price_v1 L1 for equality; price_v2 L2 for
-determinism), skipped with a log line otherwise -- same as the DM-test
-comparisons below them.
+opt-in via --versions/--rungs, for when you want all four combinations'
+predictions/metrics side by side (what `make price-model` runs, passing
+--versions price_v1,price_v2 --rungs L1,L2).
 
 Every run writes to data/processed/price_model_runs/ (gitignored) by
 default, no exceptions -- there is no "canonical" invocation this script
@@ -34,7 +39,6 @@ import hashlib
 import logging
 import time
 from pathlib import Path
-from typing import cast
 
 import mlflow
 import numpy as np
@@ -43,7 +47,6 @@ import pandas as pd
 from energy_price_forecast.common.data.loaders import load_interim_hourly, load_processed_features
 from energy_price_forecast.common.data.snapshot import file_fingerprint
 from energy_price_forecast.common.evaluation.config import PRICE_MODEL_EXPERIMENT_NAME
-from energy_price_forecast.common.evaluation.dm_test import daily_mean_loss, dm_test
 from energy_price_forecast.common.evaluation.metrics import bias, mae, rmse
 from energy_price_forecast.common.evaluation.walkforward import (
     Fold,
@@ -72,11 +75,6 @@ PERIODS = ("overall", "2024", "2025", "2026", "autumn_winter", "autumn_2026", "o
 BIN_STRESS_PERIODS = ("overall", "autumn_2026")
 OUTLIER_DAYS = ("2026-10-11", "2026-10-18", "2026-10-19")
 UPPER_THIRD_BINS = (8, 9, 10)
-
-_DAILY_HAC_LAG = 7
-_DAILY_HORIZON = 1
-_HOURLY_HAC_LAG = 48
-_HOURLY_HORIZON = 24
 
 A2_INPUT_FILES: tuple[Path, ...] = (
     Path("data/interim/hourly_merit_order.parquet"),
@@ -284,26 +282,12 @@ def _parse_args() -> argparse.Namespace:
         "--out-dir",
         type=Path,
         default=None,
-        help="Where reference_metrics/_dm_test/_predictions/data_snapshot are written. "
+        help="Where reference_metrics/_predictions/data_snapshot are written. "
         "Default: data/processed/price_model_runs (gitignored) for every run, no "
         "exceptions. Point this at outputs/results/price_v2 yourself (e.g. for `make "
         "price-model`) when you deliberately want to publish a run's output there.",
     )
     p.add_argument("--preds-dir", type=Path, default=Path("data/processed/price_reference_preds"))
-    p.add_argument(
-        "--b-full-roll-cache",
-        type=Path,
-        default=Path(
-            "data/processed/price_model_selection_preds/price_model_selection_preds_B_full_roll.parquet"
-        ),
-    )
-    p.add_argument(
-        "--a-cache",
-        type=Path,
-        default=Path(
-            "data/processed/price_model_selection_preds/price_model_selection_preds_A.parquet"
-        ),
-    )
     p.add_argument(
         "--train-span-days",
         type=int,
@@ -343,21 +327,22 @@ def _parse_args() -> argparse.Namespace:
         default="price_v2",
         help="Comma-separated subset of price_v1,price_v2 to run. Default: price_v2 "
         "only -- the live model; price_v1 vs price_v2 was already decided (Step 7.6). "
-        "Pass price_v1,price_v2 for the full comparison (what `make price-model` runs).",
+        "Pass price_v1,price_v2 to get both versions' predictions/metrics in one run "
+        "(what `make price-model` runs).",
     )
     p.add_argument(
         "--rungs",
         default="L2",
         help="Comma-separated subset of L1,L2 to run. Default: L2 only -- the live "
         "information state; L1 uses ENTSO-E forecasts never available live, an "
-        "academic upper bound. Pass L1,L2 for the full comparison (what `make "
-        "price-model` runs).",
+        "academic upper bound. Pass L1,L2 to get both rungs' predictions/metrics in "
+        "one run (what `make price-model` runs).",
     )
     p.add_argument(
         "--tag",
         default="",
         help="Suffix for every output file of this run (prediction caches, "
-        "reference_metrics/_dm_test/_predictions, data_snapshot, the MLflow run name) "
+        "reference_metrics/_predictions, data_snapshot, the MLflow run name) "
         "-- keeps two different sweeps from overwriting each other's files in the "
         "shared output directory. Required whenever --train-span-days/--refit-every/"
         "--test-start/--test-end/--window/--drop-features deviates from its default. "
@@ -563,54 +548,6 @@ def main() -> None:
     fold_counts = {k: v["delivery_day"].nunique() for k, v in predictions.items()}
     logger.info("delivery-day counts per run (must match): %s", fold_counts)
 
-    # --- C.2 Equality check against Step 7.6's caches -------------------------
-    # Runs whenever both combinations it needs were actually computed this
-    # run (price_v2 L1 + price_v1 L1) -- not tied to any particular
-    # --tag/--versions/--rungs configuration, same "skip gracefully, don't
-    # treat one configuration as special" principle as the DM-test
-    # comparisons below.
-    if ("price_v2", "L1") not in predictions or ("price_v1", "L1") not in predictions:
-        logger.info(
-            "equality check skipped -- needs both price_v2/L1 and price_v1/L1, not "
-            "computed in this run (versions=%s, rungs=%s)",
-            args.versions,
-            args.rungs,
-        )
-    elif args.b_full_roll_cache.exists() and args.a_cache.exists():
-        # One-time migration proof (Teil B's code simplification changed nothing)
-        # -- the gitignored 7.6 prediction caches this compares against are local
-        # working artefacts, not guaranteed to exist on a later run or a fresh
-        # checkout, so this step is skipped gracefully rather than failing.
-        b_full_roll_cache = pd.read_parquet(args.b_full_roll_cache)
-        a_cache = pd.read_parquet(args.a_cache)
-        for label, new_preds, old_cache in (
-            (
-                "price_v2 L1 vs B_full_roll (7.6)",
-                predictions[("price_v2", "L1")],
-                b_full_roll_cache,
-            ),
-            ("price_v1 L1 vs A (7.6)", predictions[("price_v1", "L1")], a_cache),
-        ):
-            common_index = new_preds.index.intersection(old_cache.index)
-            diff = (
-                new_preds.loc[common_index, "y_pred"] - old_cache.loc[common_index, "y_pred"]
-            ).abs()
-            max_diff = float(diff.max())
-            logger.info(
-                "equality check [%s]: max |diff| = %.3e over %d common hours -- %s",
-                label,
-                max_diff,
-                len(common_index),
-                "PASS" if max_diff <= 1e-9 else "RUECKFRAGE: FAILED",
-            )
-    else:
-        logger.info(
-            "no Step 7.6 prediction caches found (%s / %s) -- skipping the one-time "
-            "migration equality check",
-            args.b_full_roll_cache,
-            args.a_cache,
-        )
-
     # --- Determinism check: price_v2 L2, first 20 folds, run twice ------------
     # Runs whenever price_v2/L2 was actually computed this run.
     if ("price_v2", "L2") not in predictions:
@@ -742,64 +679,6 @@ def main() -> None:
     metrics_path = out_dir / f"reference_metrics{agg_suffix}.csv"
     pd.DataFrame(metrics_rows).to_csv(metrics_path, index=False)
 
-    # --- C.5 DM-tests: price_v2 vs price_v1 (L1, L2); L2 vs L1 (each version) ---
-    dm_rows = []
-    dm_periods = ("overall", "autumn_winter", "autumn_2026")
-    comparisons: list[tuple[str, tuple[str, str], tuple[str, str]]] = [
-        ("price_v2_vs_price_v1_L1", ("price_v2", "L1"), ("price_v1", "L1")),
-        ("price_v2_vs_price_v1_L2", ("price_v2", "L2"), ("price_v1", "L2")),
-        ("L2_vs_L1_price_v1", ("price_v1", "L2"), ("price_v1", "L1")),
-        ("L2_vs_L1_price_v2", ("price_v2", "L2"), ("price_v2", "L1")),
-    ]
-    n_comparisons_skipped = 0
-    for comparison_name, challenger_key, baseline_key in comparisons:
-        if challenger_key not in predictions or baseline_key not in predictions:
-            n_comparisons_skipped += 1
-            continue
-        challenger = predictions[challenger_key]
-        baseline = predictions[baseline_key]
-        loss_c = (challenger["y_true"] - challenger["y_pred"]) ** 2
-        loss_b = (baseline["y_true"] - baseline["y_pred"]) ** 2
-        periods_to_test = ("overall",) if comparison_name.startswith("L2_vs_L1") else dm_periods
-        for period in periods_to_test:
-            in_period = _period_mask(challenger["delivery_day"], period)
-            lc = loss_c.loc[in_period]
-            lb = loss_b.reindex(lc.index)
-            aligned = pd.concat([lc.rename("c"), lb.rename("b")], axis=1).dropna()
-            if len(aligned) < 2 * _HOURLY_HAC_LAG:
-                continue
-            daily_c, _ = daily_mean_loss(aligned["c"], group_by="local_day")
-            daily_b, _ = daily_mean_loss(aligned["b"], group_by="local_day")
-            daily_result = dm_test(daily_c, daily_b, hac_lag=_DAILY_HAC_LAG, horizon=_DAILY_HORIZON)
-            hourly_result = dm_test(
-                aligned["c"], aligned["b"], hac_lag=_HOURLY_HAC_LAG, horizon=_HOURLY_HORIZON
-            )
-            for block, result in (("daily", daily_result), ("hourly", hourly_result)):
-                dm_rows.append(
-                    {
-                        "comparison": comparison_name,
-                        "period": period,
-                        "block": block,
-                        "n_obs": result.n_obs,
-                        "hac_lag": result.hac_lag,
-                        "horizon": result.horizon,
-                        "mean_loss_diff": result.mean_loss_diff,
-                        "dm_stat": result.dm_stat,
-                        "p_value": result.p_value,
-                    }
-                )
-    if n_comparisons_skipped:
-        logger.info(
-            "%d/%d DM-test comparison(s) skipped -- not computed in this run "
-            "(versions=%s, rungs=%s)",
-            n_comparisons_skipped,
-            len(comparisons),
-            args.versions,
-            args.rungs,
-        )
-    dm_test_path = out_dir / f"reference_dm_test{agg_suffix}.csv"
-    pd.DataFrame(dm_rows).to_csv(dm_test_path, index=False)
-
     # --- reference_predictions.parquet ---------------------------------------
     export_rows = []
     for (version, rung), preds in predictions.items():
@@ -851,7 +730,7 @@ def main() -> None:
 
     logger.info(
         "done; wrote %d file(s) to %s (beta_monthly.csv comes from build_price_beta_table.py)",
-        len({snapshot_path, metrics_path, dm_test_path, export_path}),
+        len({snapshot_path, metrics_path, export_path}),
         out_dir,
     )
 
@@ -860,19 +739,12 @@ def main() -> None:
     overall_metrics = {
         key: _metrics_row(preds["y_true"], preds["y_pred"]) for key, preds in predictions.items()
     }
-    headline_dm_rows = [
-        dm_row
-        for dm_row in dm_rows
-        if cast(str, dm_row["comparison"]).startswith("price_v2_vs_price_v1")
-        and dm_row["period"] == "overall"
-        and dm_row["block"] == "daily"
-    ]
 
     # --- MLflow: log harness params, headline metrics, and the written -------
     # artefacts -- so train-span-days/test-start/test-end/window/refit-every
     # sweeps are queryable and comparable (mlflow ui / mlflow.search_runs),
     # not just loose CSV files.
-    written_paths = [snapshot_path, metrics_path, dm_test_path, export_path]
+    written_paths = [snapshot_path, metrics_path, export_path]
     mlflow.set_tracking_uri("file:./mlruns")
     mlflow.set_experiment(PRICE_MODEL_EXPERIMENT_NAME)
     run_name = f"price_model{agg_suffix}" if agg_suffix else "price_model"
@@ -900,9 +772,6 @@ def main() -> None:
                     f"{version}_{rung}_bias": overall["bias"],
                 }
             )
-        for dm_row in headline_dm_rows:
-            comparison = cast(str, dm_row["comparison"])
-            mlflow.log_metric(f"dm_pvalue_{comparison}", cast(float, dm_row["p_value"]))
         for path in written_paths:
             mlflow.log_artifact(str(path))
     logger.info("MLflow price_model run logged (experiment=%r).", PRICE_MODEL_EXPERIMENT_NAME)
@@ -923,13 +792,6 @@ def main() -> None:
             f"  {version} / {rung}:  RMSE={overall['rmse']:.3f}  MAE={overall['mae']:.3f}  "
             f"Bias={overall['bias']:+.3f}  (n={overall['n']:.0f})"
         )
-    if headline_dm_rows:
-        print("-" * 78)
-        for dm_row in headline_dm_rows:
-            print(
-                f"  DM-test {dm_row['comparison']}: p={cast(float, dm_row['p_value']):.4f} "
-                "(price_v2 vs price_v1, overall, daily)"
-            )
     print("-" * 78)
     print("Files written:")
     for path in written_paths:

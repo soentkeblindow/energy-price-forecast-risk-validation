@@ -76,12 +76,17 @@ p=0.44, autumn 2026 p=0.68; L2 overall p=0.82, autumn/winter p=0.90,
 autumn 2026 p=0.33. The L1→L2 cost (TSO forecasts vs. the own weather
 reconstruction) is highly significant for both versions (p<1e-6) and
 matches the error-decomposition study's own 1.1-1.6 EUR/MWh range.
+**Frozen at the 2026-10-20 run** that produced them (`reference_dm_test.csv`)
+-- `run_price_model.py` no longer computes model-vs-model/rung-vs-rung DM
+tests itself (that comparison logic was deliberately moved out of the
+model-running entry point); these figures are not currently regenerated
+by any script.
 
 ![price_v2: beta(RL) by anchor month](assets/price_v2_beta.png)
 
-Full tables: [`outputs/results/price_v2/`](results/price_v2/). Source:
-`scripts/model_risk_regimes/run_price_model.py` /
-`build_price_beta_table.py`.
+Full tables: [`outputs/results/price_v2/`](results/price_v2/).
+Predictions/metrics source: `scripts/model_risk_regimes/run_price_model.py`
+/ `build_price_beta_table.py`.
 
 ## 4. Known limitations
 
