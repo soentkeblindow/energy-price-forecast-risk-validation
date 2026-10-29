@@ -80,7 +80,7 @@ matches the error-decomposition study's own 1.1-1.6 EUR/MWh range.
 ![price_v2: beta(RL) by anchor month](assets/price_v2_beta.png)
 
 Full tables: [`outputs/results/price_v2/`](results/price_v2/). Source:
-`scripts/model_risk_regimes/run_price_reference.py` /
+`scripts/model_risk_regimes/run_price_model.py` /
 `build_price_beta_table.py`.
 
 ## 4. Known limitations

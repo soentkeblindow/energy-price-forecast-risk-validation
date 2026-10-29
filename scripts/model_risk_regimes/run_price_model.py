@@ -688,7 +688,7 @@ def main() -> None:
     written_paths = [snapshot_path, metrics_path, dm_test_path, export_path]
     mlflow.set_tracking_uri("file:./mlruns")
     mlflow.set_experiment(PRICE_MODEL_EXPERIMENT_NAME)
-    run_name = f"price_reference_{args.tag}" if args.tag else "price_reference"
+    run_name = f"price_model_{args.tag}" if args.tag else "price_model"
     with mlflow.start_run(run_name=run_name):
         mlflow.set_tags({"study": args.study, "note": args.note})
         mlflow.log_params(
@@ -721,7 +721,7 @@ def main() -> None:
                 mlflow.log_metric(f"dm_pvalue_{comparison}", cast(float, dm_row["p_value"]))
         for path in written_paths:
             mlflow.log_artifact(str(path))
-    logger.info("MLflow price_reference run logged (experiment=%r).", PRICE_MODEL_EXPERIMENT_NAME)
+    logger.info("MLflow price_model run logged (experiment=%r).", PRICE_MODEL_EXPERIMENT_NAME)
 
 
 if __name__ == "__main__":

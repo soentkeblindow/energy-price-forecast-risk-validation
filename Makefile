@@ -1,4 +1,4 @@
-.PHONY: help data backtest test lint dashboard report-assets dm-test requirements price-reference price-beta
+.PHONY: help data backtest test lint dashboard report-assets dm-test requirements price-model price-beta
 
 .DEFAULT_GOAL := help
 
@@ -12,7 +12,7 @@ help:
 	@echo "  report-assets   Regenerate README figures/tables from outputs/results/ (no API key needed)"
 	@echo "  dm-test         Run the Diebold-Mariano significance test (no API key needed)"
 	@echo "  requirements    Regenerate requirements.txt for Streamlit Community Cloud deployment"
-	@echo "  price-reference Recompute the price_v1/price_v2 reference run (outputs/results/price_v2/)"
+	@echo "  price-model     Recompute the price_v1/price_v2 reference run (outputs/results/price_v2/)"
 	@echo "  price-beta      Extend price_v2's monthly beta(RL) table and figure by one more anchor month"
 
 data:
@@ -42,8 +42,8 @@ dm-test:
 requirements:
 	uv export --format requirements.txt --extra dashboard --no-dev --no-hashes -o src/energy_price_forecast/model_risk_regimes/dashboard/requirements.txt
 
-price-reference:
-	uv run python scripts/model_risk_regimes/run_price_reference.py
+price-model:
+	uv run python scripts/model_risk_regimes/run_price_model.py
 
 price-beta:
 	uv run python scripts/model_risk_regimes/build_price_beta_table.py
