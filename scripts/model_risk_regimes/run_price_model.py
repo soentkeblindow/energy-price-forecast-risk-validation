@@ -246,7 +246,16 @@ def _parse_args() -> argparse.Namespace:
         "--features-path", type=Path, default=Path("data/processed/features_merit_order.parquet")
     )
     p.add_argument("--renewables-path", type=Path, default=RENEWABLES_FILE)
-    p.add_argument("--out-dir", type=Path, default=Path("outputs/results/price_v2"))
+    p.add_argument(
+        "--out-dir",
+        type=Path,
+        default=None,
+        help="Where reference_metrics/_dm_test/_predictions/data_snapshot are written. "
+        "Default: outputs/results/price_v2 (the public, checked-in directory) for the "
+        "canonical full-scope reference run; data/processed/price_model_runs (gitignored) "
+        "for anything narrower (--versions/--rungs/--tag) -- keeps one-off/sweep output "
+        "out of the public results tree.",
+    )
     p.add_argument("--preds-dir", type=Path, default=Path("data/processed/price_reference_preds"))
     p.add_argument(
         "--snapshot-csv",
@@ -408,6 +417,11 @@ def main() -> None:
         agg_suffix = ""
     else:
         agg_suffix = "_" + "_".join(args.versions) + "_" + "".join(args.rungs)
+    out_dir = args.out_dir or (
+        Path("outputs/results/price_v2")
+        if is_canonical_reference
+        else Path("data/processed/price_model_runs")
+    )
 
     # --- Common L1/L2 window (same derivation as 7.3) -----------------------
     l2_first_valid_day = _first_valid_local_day(
@@ -541,10 +555,10 @@ def main() -> None:
         )
 
     # --- C.4 outputs ----------------------------------------------------------
-    args.out_dir.mkdir(parents=True, exist_ok=True)
+    out_dir.mkdir(parents=True, exist_ok=True)
 
     snapshot_rows = [file_fingerprint(p) for p in A2_INPUT_FILES] + [renewables_fp]
-    snapshot_path = args.out_dir / f"data_snapshot{agg_suffix}.csv"
+    snapshot_path = out_dir / f"data_snapshot{agg_suffix}.csv"
     pd.DataFrame(snapshot_rows).to_csv(snapshot_path, index=False)
 
     bin_assignment_l1 = rl_bin(l1_matrix["residual_load_forecast"]).reindex(index)
@@ -642,7 +656,7 @@ def main() -> None:
                 }
             )
 
-    metrics_path = args.out_dir / f"reference_metrics{agg_suffix}.csv"
+    metrics_path = out_dir / f"reference_metrics{agg_suffix}.csv"
     pd.DataFrame(metrics_rows).to_csv(metrics_path, index=False)
 
     # --- C.5 DM-tests: price_v2 vs price_v1 (L1, L2); L2 vs L1 (each version) ---
@@ -695,7 +709,7 @@ def main() -> None:
                         "p_value": result.p_value,
                     }
                 )
-    dm_test_path = args.out_dir / f"reference_dm_test{agg_suffix}.csv"
+    dm_test_path = out_dir / f"reference_dm_test{agg_suffix}.csv"
     pd.DataFrame(dm_rows).to_csv(dm_test_path, index=False)
 
     # --- reference_predictions.parquet ---------------------------------------
@@ -722,7 +736,7 @@ def main() -> None:
         )
         export_rows.append(row)
     export = pd.concat(export_rows, ignore_index=True)
-    export_path = args.out_dir / f"reference_predictions{agg_suffix}.parquet"
+    export_path = out_dir / f"reference_predictions{agg_suffix}.parquet"
     export.to_parquet(export_path)
     size_mb = export_path.stat().st_size / (1024 * 1024)
     logger.info("reference_predictions.parquet: %.2f MB (%d rows)", size_mb, len(export))
@@ -750,8 +764,21 @@ def main() -> None:
     logger.info(
         "done; wrote %d file(s) to %s (beta_monthly.csv comes from build_price_beta_table.py)",
         len({snapshot_path, metrics_path, dm_test_path, export_path}),
-        args.out_dir,
+        out_dir,
     )
+
+    # --- Headline metrics, computed once and reused for both the MLflow log
+    # and the printed summary below.
+    overall_metrics = {
+        key: _metrics_row(preds["y_true"], preds["y_pred"]) for key, preds in predictions.items()
+    }
+    headline_dm_rows = [
+        dm_row
+        for dm_row in dm_rows
+        if cast(str, dm_row["comparison"]).startswith("price_v2_vs_price_v1")
+        and dm_row["period"] == "overall"
+        and dm_row["block"] == "daily"
+    ]
 
     # --- MLflow: log harness params, headline metrics, and the written -------
     # artefacts -- so train-span-days/test-start/test-end/window/refit-every
@@ -761,7 +788,7 @@ def main() -> None:
     mlflow.set_tracking_uri("file:./mlruns")
     mlflow.set_experiment(PRICE_MODEL_EXPERIMENT_NAME)
     run_name = f"price_model{agg_suffix}" if agg_suffix else "price_model"
-    with mlflow.start_run(run_name=run_name):
+    with mlflow.start_run(run_name=run_name) as run:
         mlflow.set_tags({"study": args.study, "note": args.note})
         mlflow.log_params(
             {
@@ -776,8 +803,7 @@ def main() -> None:
                 "n_folds": len(folds),
             }
         )
-        for (version, rung), preds in predictions.items():
-            overall = _metrics_row(preds["y_true"], preds["y_pred"])
+        for (version, rung), overall in overall_metrics.items():
             mlflow.log_metrics(
                 {
                     f"{version}_{rung}_rmse": overall["rmse"],
@@ -785,17 +811,46 @@ def main() -> None:
                     f"{version}_{rung}_bias": overall["bias"],
                 }
             )
-        for dm_row in dm_rows:
+        for dm_row in headline_dm_rows:
             comparison = cast(str, dm_row["comparison"])
-            if (
-                comparison.startswith("price_v2_vs_price_v1")
-                and dm_row["period"] == "overall"
-                and dm_row["block"] == "daily"
-            ):
-                mlflow.log_metric(f"dm_pvalue_{comparison}", cast(float, dm_row["p_value"]))
+            mlflow.log_metric(f"dm_pvalue_{comparison}", cast(float, dm_row["p_value"]))
         for path in written_paths:
             mlflow.log_artifact(str(path))
     logger.info("MLflow price_model run logged (experiment=%r).", PRICE_MODEL_EXPERIMENT_NAME)
+
+    # --- Printed summary: the numbers and file paths, front and center ------
+    # (the logger.info lines above are a progress trace, easy to miss in a
+    # long scroll -- this is the thing a human actually came here to read).
+    print()
+    print("=" * 78)
+    print(
+        f"RESULTS  versions={','.join(args.versions)}  rungs={','.join(args.rungs)}  "
+        f"window={test_start.date()}..{test_end.date()}  train_span_days="
+        f"{config_v2.train_span_days}"
+    )
+    print("-" * 78)
+    for (version, rung), overall in overall_metrics.items():
+        print(
+            f"  {version} / {rung}:  RMSE={overall['rmse']:.3f}  MAE={overall['mae']:.3f}  "
+            f"Bias={overall['bias']:+.3f}  (n={overall['n']:.0f})"
+        )
+    if headline_dm_rows:
+        print("-" * 78)
+        for dm_row in headline_dm_rows:
+            print(
+                f"  DM-test {dm_row['comparison']}: p={cast(float, dm_row['p_value']):.4f} "
+                "(price_v2 vs price_v1, overall, daily)"
+            )
+    print("-" * 78)
+    print("Files written:")
+    for path in written_paths:
+        print(f"  {path}")
+    print(
+        f"MLflow: experiment={PRICE_MODEL_EXPERIMENT_NAME!r}  run={run_name!r}  "
+        f"run_id={run.info.run_id}"
+    )
+    print("  browse with: uv run mlflow ui --backend-store-uri file:./mlruns")
+    print("=" * 78)
 
 
 if __name__ == "__main__":
