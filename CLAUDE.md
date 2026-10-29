@@ -43,9 +43,13 @@ Enforced by `tests/test_dependency_rules.py` (AST-based, parametrized over every
 7.6/7.7); its configuration lives in exactly one place,
 `src/energy_price_forecast/common/models/price_model.py`
 (`PriceModelConfig`, `PRICE_V1`/`PRICE_V2`, `build_price_model`) — no
-other script sets model parameters directly. Its reference numbers live
-in `outputs/results/price_v2/` (`run_price_model.py`/
-`build_price_beta_table.py` regenerate them; `run_price_model.py` also
+other script sets model parameters directly. `scripts/model_risk_regimes/
+run_price_model.py` is the main entry point to run it: by default
+`--versions price_v2 --rungs L2` only (the live case -- `price_v1` and L1,
+ENTSO-E's own forecasts never available live, are opt-in). Its reference
+numbers live in `outputs/results/price_v2/` (`run_price_model.py --versions
+price_v1,price_v2 --rungs L1,L2` -- what `make price-model` runs --
+/`build_price_beta_table.py` regenerate them; `run_price_model.py` also
 takes harness-parameter flags -- `--train-span-days`/`--test-start`/
 `--test-end`/`--window`/`--refit-every`, gated behind a required `--tag`
 -- for one-off backtest-window sweeps without touching the canonical

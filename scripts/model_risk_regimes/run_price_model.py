@@ -1,26 +1,24 @@
-"""Sprint 7 Step 7.7, Teil C (docs/sprint7_step7_7_spec.md, section 4).
+"""Main entry point for running `price_v2` (`common.models.price_model`).
 
-Reference recomputation for `price_v1`/`price_v2` (`common.models.price_model`):
-four runs on an identical fold list, two rungs each --
+By default, runs only `price_v2` on the L2 rung -- wind/solar/residual-
+load/renewable-share from our own NWP reconstruction, i.e. the live
+information state, the only one that matters day to day. `price_v1`
+(the pre-price_v2 baseline) and L1 (the same columns from ENTSO-E's own
+day-ahead forecasts, an academic upper bound never available live) are
+opt-in via --versions/--rungs, for the one case that still needs them: the
+full price_v1-vs-price_v2 / L1-vs-L2 comparison behind the published
+reference numbers in outputs/results/price_v2/ (what `make price-model`
+runs, passing --versions price_v1,price_v2 --rungs L1,L2). Only in that
+full-scope, no-overrides, no-tag configuration does this script also
+re-run the Step 7.6/7.7 equality and determinism checks and write to the
+canonical (unsuffixed) output files -- any narrower --versions/--rungs
+selection, or any --tag, writes to its own suffixed files instead so
+nothing ever silently overwrites the canonical reference.
 
-  L1  core_gas with ENTSO-E day-ahead forecasts (upper bound: not available
-      live)
-  L2  same columns, wind/solar/residual-load/renewable-share from the own
-      NWP reconstruction (matches the live information state)
-
-No model change, no new measurement, no tuning -- by default (no --tag)
-this only proves the Step 7.7 code simplification (Teil B) did not change
-price_v2's L1 numbers, which must match Step 7.6's own cached predictions
-exactly.
-
-With --tag set, the same code doubles as a harness-parameter sweep tool:
 --train-span-days/--test-start/--test-end/--window/--refit-every override
 the walk-forward harness (never MeritOrderForecaster's own structure --
 SRMC definition, beta window/bins stay exactly as fixed in Step 7.7 Teil
-B, common.models.price_model.PRICE_V2). Outputs are written under the
---tag suffix so the canonical reference files are never touched, and the
-Step 7.6 equality/determinism checks (only valid for the default 90-day
-window) are skipped.
+B, common.models.price_model.PRICE_V2) and require --tag.
 """
 
 from __future__ import annotations
@@ -78,6 +76,26 @@ A2_INPUT_FILES: tuple[Path, ...] = (
     Path("data/processed/features_merit_order.parquet"),
 )
 RENEWABLES_FILE = Path("data/processed/renewables_forecast_rolling365_l2.parquet")
+
+_VALID_VERSIONS: tuple[str, ...] = ("price_v1", "price_v2")
+_VALID_RUNGS: tuple[str, ...] = ("L1", "L2")
+
+
+def _parse_scope(
+    value: str, valid: tuple[str, ...], flag: str, parser: argparse.ArgumentParser
+) -> list[str]:
+    """Parse a comma-separated ``--versions``/``--rungs`` value into a
+    non-empty subset of ``valid``, in ``valid``'s own order (so e.g.
+    ``"price_v2,price_v1"`` and ``"price_v1,price_v2"`` are equivalent).
+    """
+    requested = {v.strip() for v in value.split(",") if v.strip()}
+    invalid = requested - set(valid)
+    if invalid or not requested:
+        parser.error(
+            f"--{flag} must be a comma-separated, non-empty subset of {valid} "
+            f"(got {value!r}, invalid: {sorted(invalid)})"
+        )
+    return [v for v in valid if v in requested]
 
 
 def _renewables_fingerprint(path: Path) -> dict[str, object]:
@@ -286,6 +304,21 @@ def _parse_args() -> argparse.Namespace:
         help="Walk-forward window type. Overriding this from the default requires --tag.",
     )
     p.add_argument(
+        "--versions",
+        default="price_v2",
+        help="Comma-separated subset of price_v1,price_v2 to run. Default: price_v2 "
+        "only -- the live model; price_v1 vs price_v2 was already decided (Step 7.6). "
+        "Pass price_v1,price_v2 for the full comparison (what `make price-model` runs).",
+    )
+    p.add_argument(
+        "--rungs",
+        default="L2",
+        help="Comma-separated subset of L1,L2 to run. Default: L2 only -- the live "
+        "information state; L1 uses ENTSO-E forecasts never available live, an "
+        "academic upper bound. Pass L1,L2 for the full comparison (what `make "
+        "price-model` runs).",
+    )
+    p.add_argument(
         "--tag",
         default="",
         help="Suffix for every output file of this run (prediction caches, "
@@ -293,11 +326,16 @@ def _parse_args() -> argparse.Namespace:
         "-- keeps a harness-parameter sweep from touching the canonical "
         "outputs/results/price_v2/ and data/processed/price_reference_preds/ files. "
         "Required whenever --train-span-days/--refit-every/--test-start/--test-end/"
-        "--window deviates from its default.",
+        "--window deviates from its default. (--versions/--rungs narrower than the "
+        "full set never require --tag -- they get their own, automatically-derived "
+        "output suffix instead.)",
     )
     p.add_argument("--study", default="price_reference", help="MLflow tag: logical study grouping.")
     p.add_argument("--note", default="", help="MLflow tag: free-text run note.")
     args = p.parse_args()
+
+    args.versions = _parse_scope(args.versions, _VALID_VERSIONS, "versions", p)
+    args.rungs = _parse_scope(args.rungs, _VALID_RUNGS, "rungs", p)
 
     non_default_harness_params = (
         args.train_span_days != 90
@@ -359,7 +397,17 @@ def main() -> None:
     config_v2 = dataclasses.replace(
         PRICE_V2, train_span_days=args.train_span_days, refit_every=args.refit_every
     )
-    suffix = f"_{args.tag}" if args.tag else ""
+    is_full_scope = set(args.versions) == set(_VALID_VERSIONS) and set(args.rungs) == set(
+        _VALID_RUNGS
+    )
+    is_canonical_reference = is_full_scope and not args.tag
+    cache_suffix = f"_{args.tag}" if args.tag else ""
+    if args.tag:
+        agg_suffix = cache_suffix
+    elif is_full_scope:
+        agg_suffix = ""
+    else:
+        agg_suffix = "_" + "_".join(args.versions) + "_" + "".join(args.rungs)
 
     # --- Common L1/L2 window (same derivation as 7.3) -----------------------
     l2_first_valid_day = _first_valid_local_day(
@@ -383,23 +431,31 @@ def main() -> None:
     if not folds:
         raise ValueError("no evaluable folds in the common L1/L2 window")
     logger.info(
-        "common window: %s to %s (%d folds, identical for all 4 runs, "
-        "train_span_days=%d, refit_every=%d, window=%s)",
+        "common window: %s to %s (%d folds, identical across all requested runs, "
+        "versions=%s, rungs=%s, train_span_days=%d, refit_every=%d, window=%s)",
         folds[0].delivery_day.date(),
         folds[-1].delivery_day.date(),
         len(folds),
+        args.versions,
+        args.rungs,
         config_v2.train_span_days,
         config_v2.refit_every,
         args.window,
     )
 
-    # --- Four runs -----------------------------------------------------------
+    # --- Requested (version, rung) combinations ------------------------------
     args.preds_dir.mkdir(parents=True, exist_ok=True)
+    matrices = {
+        ("price_v1", "L1"): l1_matrix,
+        ("price_v1", "L2"): l2_matrix,
+        ("price_v2", "L1"): l1_matrix_v2,
+        ("price_v2", "L2"): l2_matrix_v2,
+    }
+    configs = {"price_v1": config_v1, "price_v2": config_v2}
     runs = {
-        ("price_v1", "L1"): (build_price_model(config_v1, long_history), l1_matrix),
-        ("price_v1", "L2"): (build_price_model(config_v1, long_history), l2_matrix),
-        ("price_v2", "L1"): (build_price_model(config_v2, long_history), l1_matrix_v2),
-        ("price_v2", "L2"): (build_price_model(config_v2, long_history), l2_matrix_v2),
+        key: (build_price_model(configs[key[0]], long_history), matrix)
+        for key, matrix in matrices.items()
+        if key[0] in args.versions and key[1] in args.rungs
     }
     predictions: dict[tuple[str, str], pd.DataFrame] = {}
     for (version, rung), (model, x) in runs.items():
@@ -412,7 +468,7 @@ def main() -> None:
             y,
             args.preds_dir,
             refit_every=config_v2.refit_every,
-            suffix=suffix,
+            suffix=cache_suffix,
         )
         complete_days, incomplete_days = split_complete_delivery_days(preds)
         if len(incomplete_days) > 0:
@@ -423,13 +479,17 @@ def main() -> None:
     logger.info("delivery-day counts per run (must match): %s", fold_counts)
 
     # --- C.2 Equality checks against Step 7.6's caches -----------------------
-    # Only valid for the default (--tag == "") run: a harness-parameter sweep
-    # has nothing comparable in Step 7.6's caches to check against.
-    if args.tag:
+    # Only valid for the full-scope, no-tag canonical reference run: a
+    # narrower --versions/--rungs selection or a harness-parameter sweep has
+    # nothing comparable in Step 7.6's caches to check against.
+    if not is_canonical_reference:
         logger.info(
-            "--tag=%r set (harness-parameter sweep) -- skipping the Step 7.6 equality "
-            "check and the determinism check, both only valid for the default window",
+            "non-canonical run (tag=%r, versions=%s, rungs=%s) -- skipping the Step 7.6 "
+            "equality check and the determinism check, both only valid for the full "
+            "price_v1+price_v2/L1+L2 default window",
             args.tag,
+            args.versions,
+            args.rungs,
         )
     else:
         # One-time migration proof (Teil B's code simplification changed nothing)
@@ -484,7 +544,7 @@ def main() -> None:
     args.out_dir.mkdir(parents=True, exist_ok=True)
 
     snapshot_rows = [file_fingerprint(p) for p in A2_INPUT_FILES] + [renewables_fp]
-    snapshot_path = args.out_dir / f"data_snapshot{suffix}.csv"
+    snapshot_path = args.out_dir / f"data_snapshot{agg_suffix}.csv"
     pd.DataFrame(snapshot_rows).to_csv(snapshot_path, index=False)
 
     bin_assignment_l1 = rl_bin(l1_matrix["residual_load_forecast"]).reindex(index)
@@ -582,7 +642,7 @@ def main() -> None:
                 }
             )
 
-    metrics_path = args.out_dir / f"reference_metrics{suffix}.csv"
+    metrics_path = args.out_dir / f"reference_metrics{agg_suffix}.csv"
     pd.DataFrame(metrics_rows).to_csv(metrics_path, index=False)
 
     # --- C.5 DM-tests: price_v2 vs price_v1 (L1, L2); L2 vs L1 (each version) ---
@@ -595,6 +655,14 @@ def main() -> None:
         ("L2_vs_L1_price_v2", ("price_v2", "L2"), ("price_v2", "L1")),
     ]
     for comparison_name, challenger_key, baseline_key in comparisons:
+        if challenger_key not in predictions or baseline_key not in predictions:
+            logger.info(
+                "comparison %s skipped -- not computed in this run (versions=%s, rungs=%s)",
+                comparison_name,
+                args.versions,
+                args.rungs,
+            )
+            continue
         challenger = predictions[challenger_key]
         baseline = predictions[baseline_key]
         loss_c = (challenger["y_true"] - challenger["y_pred"]) ** 2
@@ -627,7 +695,7 @@ def main() -> None:
                         "p_value": result.p_value,
                     }
                 )
-    dm_test_path = args.out_dir / f"reference_dm_test{suffix}.csv"
+    dm_test_path = args.out_dir / f"reference_dm_test{agg_suffix}.csv"
     pd.DataFrame(dm_rows).to_csv(dm_test_path, index=False)
 
     # --- reference_predictions.parquet ---------------------------------------
@@ -654,7 +722,7 @@ def main() -> None:
         )
         export_rows.append(row)
     export = pd.concat(export_rows, ignore_index=True)
-    export_path = args.out_dir / f"reference_predictions{suffix}.parquet"
+    export_path = args.out_dir / f"reference_predictions{agg_suffix}.parquet"
     export.to_parquet(export_path)
     size_mb = export_path.stat().st_size / (1024 * 1024)
     logger.info("reference_predictions.parquet: %.2f MB (%d rows)", size_mb, len(export))
@@ -666,8 +734,11 @@ def main() -> None:
         )
 
     # --- Parity check: tree_pred + beta*srmc == y_pred for price_v2 ---------
-    for rung in ("L1", "L2"):
-        preds = predictions[("price_v2", rung)]
+    for rung in args.rungs:
+        key = ("price_v2", rung)
+        if key not in predictions:
+            continue
+        preds = predictions[key]
         reconstructed = preds["tree_pred"] + preds["beta"] * preds["srmc"]
         max_parity_diff = float((reconstructed - preds["y_pred"]).abs().max())
         logger.info(
@@ -677,7 +748,8 @@ def main() -> None:
         )
 
     logger.info(
-        "done; wrote 4 files to %s (beta_monthly.csv comes from build_price_beta_table.py)",
+        "done; wrote %d file(s) to %s (beta_monthly.csv comes from build_price_beta_table.py)",
+        len({snapshot_path, metrics_path, dm_test_path, export_path}),
         args.out_dir,
     )
 
@@ -688,11 +760,13 @@ def main() -> None:
     written_paths = [snapshot_path, metrics_path, dm_test_path, export_path]
     mlflow.set_tracking_uri("file:./mlruns")
     mlflow.set_experiment(PRICE_MODEL_EXPERIMENT_NAME)
-    run_name = f"price_model_{args.tag}" if args.tag else "price_model"
+    run_name = f"price_model{agg_suffix}" if agg_suffix else "price_model"
     with mlflow.start_run(run_name=run_name):
         mlflow.set_tags({"study": args.study, "note": args.note})
         mlflow.log_params(
             {
+                "versions": ",".join(args.versions),
+                "rungs": ",".join(args.rungs),
                 "train_span_days": config_v2.train_span_days,
                 "refit_every": config_v2.refit_every,
                 "test_start": str(test_start.date()),

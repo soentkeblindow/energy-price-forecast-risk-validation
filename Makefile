@@ -43,7 +43,7 @@ requirements:
 	uv export --format requirements.txt --extra dashboard --no-dev --no-hashes -o src/energy_price_forecast/model_risk_regimes/dashboard/requirements.txt
 
 price-model:
-	uv run python scripts/model_risk_regimes/run_price_model.py
+	uv run python scripts/model_risk_regimes/run_price_model.py --versions price_v1,price_v2 --rungs L1,L2
 
 price-beta:
 	uv run python scripts/model_risk_regimes/build_price_beta_table.py
