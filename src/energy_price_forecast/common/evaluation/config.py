@@ -7,6 +7,7 @@ from ..market_time import LOCAL_TZ
 EXPERIMENT_NAME = "baselines"
 SPRINT3_EXPERIMENT_NAME = "sprint3_models"
 CALIBRATION_EXPERIMENT_NAME = "calibration_and_risk"
+PRICE_MODEL_EXPERIMENT_NAME = "price_model"
 
 
 @dataclass(frozen=True)

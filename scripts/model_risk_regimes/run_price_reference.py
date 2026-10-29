@@ -8,24 +8,38 @@ four runs on an identical fold list, two rungs each --
   L2  same columns, wind/solar/residual-load/renewable-share from the own
       NWP reconstruction (matches the live information state)
 
-No model change, no new measurement, no tuning -- this only proves the
-Step 7.7 code simplification (Teil B) did not change price_v2's L1
-numbers, which must match Step 7.6's own cached predictions exactly.
+No model change, no new measurement, no tuning -- by default (no --tag)
+this only proves the Step 7.7 code simplification (Teil B) did not change
+price_v2's L1 numbers, which must match Step 7.6's own cached predictions
+exactly.
+
+With --tag set, the same code doubles as a harness-parameter sweep tool:
+--train-span-days/--test-start/--test-end/--window/--refit-every override
+the walk-forward harness (never MeritOrderForecaster's own structure --
+SRMC definition, beta window/bins stay exactly as fixed in Step 7.7 Teil
+B, common.models.price_model.PRICE_V2). Outputs are written under the
+--tag suffix so the canonical reference files are never touched, and the
+Step 7.6 equality/determinism checks (only valid for the default 90-day
+window) are skipped.
 """
 
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import hashlib
 import logging
 import time
 from pathlib import Path
+from typing import cast
 
+import mlflow
 import numpy as np
 import pandas as pd
 
 from energy_price_forecast.common.data.loaders import load_interim_hourly, load_processed_features
 from energy_price_forecast.common.data.snapshot import file_fingerprint
+from energy_price_forecast.common.evaluation.config import PRICE_MODEL_EXPERIMENT_NAME
 from energy_price_forecast.common.evaluation.dm_test import daily_mean_loss, dm_test
 from energy_price_forecast.common.evaluation.metrics import bias, mae, rmse
 from energy_price_forecast.common.evaluation.walkforward import (
@@ -47,7 +61,6 @@ from energy_price_forecast.model_risk_regimes.features.l2_matrix import build_l2
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
 
-TRAIN_SPAN_DAYS = 90
 MAX_PREDICTIONS_MB = 5.0
 
 PERIODS = ("overall", "2024", "2025", "2026", "autumn_winter", "autumn_2026", "october_2026")
@@ -103,20 +116,26 @@ def _first_valid_local_day(frame: pd.DataFrame, columns: list[str]) -> pd.Timest
 
 
 def _run_reference_backtest(
-    y: pd.Series, model: object, folds: list[Fold], x: pd.DataFrame
+    y: pd.Series, model: object, folds: list[Fold], x: pd.DataFrame, *, refit_every: int = 1
 ) -> pd.DataFrame:
-    """Drive ``model`` through ``folds`` (daily refit, matching the fixed
-    refit cadence both price_v1/price_v2 use). If ``model`` exposes
-    ``predict_components`` (price_v2's MeritOrderForecaster), captures
-    tree_pred/beta/srmc/rl_bin/anchor_month alongside y_pred directly from
-    the same pass -- no second, post-hoc computation.
+    """Drive ``model`` through ``folds``. On every ``refit_every``-th fold
+    the model is refit on that fold's train slice; the default of 1 matches
+    the fixed daily-refit cadence both price_v1/price_v2 have always used
+    (same gating as ``common.evaluation.walkforward.run_backtest``, kept
+    separate here because this function additionally captures
+    ``predict_components`` output, which ``run_backtest`` cannot). If
+    ``model`` exposes ``predict_components`` (price_v2's
+    MeritOrderForecaster), captures tree_pred/beta/srmc/rl_bin/anchor_month
+    alongside y_pred directly from the same pass -- no second, post-hoc
+    computation.
     """
     has_components = hasattr(model, "predict_components")
     records: list[pd.DataFrame] = []
-    for fold in folds:
+    for i, fold in enumerate(folds):
         history = y.loc[fold.train_index]
         x_train = x.loc[fold.train_index]
-        model.fit(history, x_train)  # type: ignore[attr-defined]
+        if i % refit_every == 0:
+            model.fit(history, x_train)  # type: ignore[attr-defined]
         x_test = x.loc[fold.test_index]
         if has_components:
             comp = model.predict_components(  # type: ignore[attr-defined]
@@ -149,14 +168,22 @@ def _run_reference_backtest(
 
 
 def _get_or_run(
-    name: str, model: object, folds: list[Fold], x: pd.DataFrame, y: pd.Series, preds_dir: Path
+    name: str,
+    model: object,
+    folds: list[Fold],
+    x: pd.DataFrame,
+    y: pd.Series,
+    preds_dir: Path,
+    *,
+    refit_every: int = 1,
+    suffix: str = "",
 ) -> pd.DataFrame:
-    cache_path = preds_dir / f"price_reference_preds_{name}.parquet"
+    cache_path = preds_dir / f"price_reference_preds_{name}{suffix}.parquet"
     if cache_path.exists():
         logger.info("%s: loaded cached predictions from %s", name, cache_path)
         return pd.read_parquet(cache_path)
     t0 = time.monotonic()
-    preds = _run_reference_backtest(y, model, folds, x)
+    preds = _run_reference_backtest(y, model, folds, x, refit_every=refit_every)
     elapsed = time.monotonic() - t0
     logger.info(
         "%s: %d test hours in %.1fs (%.3fs/fold)", name, len(preds), elapsed, elapsed / len(folds)
@@ -224,7 +251,68 @@ def _parse_args() -> argparse.Namespace:
             "data/processed/price_model_selection_preds/price_model_selection_preds_A.parquet"
         ),
     )
-    return p.parse_args()
+    p.add_argument(
+        "--train-span-days",
+        type=int,
+        default=90,
+        help="Rolling walk-forward training window in days (harness parameter, never "
+        "MeritOrderForecaster's own structure). Overriding this from the default "
+        "requires --tag.",
+    )
+    p.add_argument(
+        "--refit-every",
+        type=int,
+        default=1,
+        help="Refit cadence in days; default 1 matches the historical daily refit. "
+        "Overriding this from the default requires --tag.",
+    )
+    p.add_argument(
+        "--test-start",
+        default=None,
+        help="Walk-forward test-period start (YYYY-MM-DD). Default: derived from the "
+        "data (L2 first fully-covered day + train-span-days + 1), as before. "
+        "Overriding this requires --tag.",
+    )
+    p.add_argument(
+        "--test-end",
+        default=None,
+        help="Walk-forward test-period end (YYYY-MM-DD). Default: the data edge (last "
+        "locally-complete delivery day), as before. Overriding this requires --tag.",
+    )
+    p.add_argument(
+        "--window",
+        default="rolling",
+        choices=["rolling", "expanding"],
+        help="Walk-forward window type. Overriding this from the default requires --tag.",
+    )
+    p.add_argument(
+        "--tag",
+        default="",
+        help="Suffix for every output file of this run (prediction caches, "
+        "reference_metrics/_dm_test/_predictions, data_snapshot, the MLflow run name) "
+        "-- keeps a harness-parameter sweep from touching the canonical "
+        "outputs/results/price_v2/ and data/processed/price_reference_preds/ files. "
+        "Required whenever --train-span-days/--refit-every/--test-start/--test-end/"
+        "--window deviates from its default.",
+    )
+    p.add_argument("--study", default="price_reference", help="MLflow tag: logical study grouping.")
+    p.add_argument("--note", default="", help="MLflow tag: free-text run note.")
+    args = p.parse_args()
+
+    non_default_harness_params = (
+        args.train_span_days != 90
+        or args.refit_every != 1
+        or args.test_start is not None
+        or args.test_end is not None
+        or args.window != "rolling"
+    )
+    if non_default_harness_params and not args.tag:
+        p.error(
+            "--tag is required when overriding --train-span-days/--refit-every/"
+            "--test-start/--test-end/--window -- it suffixes every output file so a "
+            "harness-parameter sweep never overwrites the canonical price_v2 reference."
+        )
+    return args
 
 
 def main() -> None:
@@ -264,44 +352,68 @@ def main() -> None:
     edge = last_complete_local_day(price)
     logger.info("data edge: %s", edge.date())
 
+    # --- Harness parameters (default: identical to the Step 7.7 reference) --
+    config_v1 = dataclasses.replace(
+        PRICE_V1, train_span_days=args.train_span_days, refit_every=args.refit_every
+    )
+    config_v2 = dataclasses.replace(
+        PRICE_V2, train_span_days=args.train_span_days, refit_every=args.refit_every
+    )
+    suffix = f"_{args.tag}" if args.tag else ""
+
     # --- Common L1/L2 window (same derivation as 7.3) -----------------------
     l2_first_valid_day = _first_valid_local_day(
         l2_matrix, ["wind_onshore_forecast", "wind_offshore_forecast", "solar_forecast"]
     )
     logger.info("L2 first fully-covered local day: %s", l2_first_valid_day.date())
     excluded_days = _incomplete_local_days(l1_matrix) | _incomplete_local_days(l2_matrix)
-    candidate_start = l2_first_valid_day + pd.DateOffset(days=TRAIN_SPAN_DAYS + 1)
+    default_start = l2_first_valid_day + pd.DateOffset(days=config_v2.train_span_days + 1)
+    test_start = pd.Timestamp(args.test_start, tz=LOCAL_TZ) if args.test_start else default_start
+    test_end = pd.Timestamp(args.test_end, tz=LOCAL_TZ) if args.test_end else edge
     candidate_folds = list(
         walk_forward_splits(
             index,
-            test_start=candidate_start.strftime("%Y-%m-%d"),
-            test_end=edge.strftime("%Y-%m-%d"),
-            window="rolling",
-            train_span_days=TRAIN_SPAN_DAYS,
+            test_start=test_start.strftime("%Y-%m-%d"),
+            test_end=test_end.strftime("%Y-%m-%d"),
+            window=args.window,
+            train_span_days=config_v2.train_span_days,
         )
     )
     folds = [f for f in candidate_folds if f.delivery_day not in excluded_days]
     if not folds:
         raise ValueError("no evaluable folds in the common L1/L2 window")
     logger.info(
-        "common window: %s to %s (%d folds, identical for all 4 runs)",
+        "common window: %s to %s (%d folds, identical for all 4 runs, "
+        "train_span_days=%d, refit_every=%d, window=%s)",
         folds[0].delivery_day.date(),
         folds[-1].delivery_day.date(),
         len(folds),
+        config_v2.train_span_days,
+        config_v2.refit_every,
+        args.window,
     )
 
     # --- Four runs -----------------------------------------------------------
     args.preds_dir.mkdir(parents=True, exist_ok=True)
     runs = {
-        ("price_v1", "L1"): (build_price_model(PRICE_V1, long_history), l1_matrix),
-        ("price_v1", "L2"): (build_price_model(PRICE_V1, long_history), l2_matrix),
-        ("price_v2", "L1"): (build_price_model(PRICE_V2, long_history), l1_matrix_v2),
-        ("price_v2", "L2"): (build_price_model(PRICE_V2, long_history), l2_matrix_v2),
+        ("price_v1", "L1"): (build_price_model(config_v1, long_history), l1_matrix),
+        ("price_v1", "L2"): (build_price_model(config_v1, long_history), l2_matrix),
+        ("price_v2", "L1"): (build_price_model(config_v2, long_history), l1_matrix_v2),
+        ("price_v2", "L2"): (build_price_model(config_v2, long_history), l2_matrix_v2),
     }
     predictions: dict[tuple[str, str], pd.DataFrame] = {}
     for (version, rung), (model, x) in runs.items():
         name = f"{version}_{rung}"
-        preds = _get_or_run(name, model, folds, x, y, args.preds_dir)
+        preds = _get_or_run(
+            name,
+            model,
+            folds,
+            x,
+            y,
+            args.preds_dir,
+            refit_every=config_v2.refit_every,
+            suffix=suffix,
+        )
         complete_days, incomplete_days = split_complete_delivery_days(preds)
         if len(incomplete_days) > 0:
             logger.info("%s: dropping %d incomplete delivery day(s)", name, len(incomplete_days))
@@ -311,65 +423,75 @@ def main() -> None:
     logger.info("delivery-day counts per run (must match): %s", fold_counts)
 
     # --- C.2 Equality checks against Step 7.6's caches -----------------------
-    # One-time migration proof (Teil B's code simplification changed nothing)
-    # -- the gitignored 7.6 prediction caches this compares against are local
-    # working artefacts, not guaranteed to exist on a later run or a fresh
-    # checkout, so this step is skipped gracefully rather than failing.
-    if args.b_full_roll_cache.exists() and args.a_cache.exists():
-        b_full_roll_cache = pd.read_parquet(args.b_full_roll_cache)
-        a_cache = pd.read_parquet(args.a_cache)
-        for label, new_preds, old_cache in (
-            (
-                "price_v2 L1 vs B_full_roll (7.6)",
-                predictions[("price_v2", "L1")],
-                b_full_roll_cache,
-            ),
-            ("price_v1 L1 vs A (7.6)", predictions[("price_v1", "L1")], a_cache),
-        ):
-            common_index = new_preds.index.intersection(old_cache.index)
-            diff = (
-                new_preds.loc[common_index, "y_pred"] - old_cache.loc[common_index, "y_pred"]
-            ).abs()
-            max_diff = float(diff.max())
-            logger.info(
-                "equality check [%s]: max |diff| = %.3e over %d common hours -- %s",
-                label,
-                max_diff,
-                len(common_index),
-                "PASS" if max_diff <= 1e-9 else "RUECKFRAGE: FAILED",
-            )
-    else:
+    # Only valid for the default (--tag == "") run: a harness-parameter sweep
+    # has nothing comparable in Step 7.6's caches to check against.
+    if args.tag:
         logger.info(
-            "no Step 7.6 prediction caches found (%s / %s) -- skipping the one-time "
-            "migration equality check",
-            args.b_full_roll_cache,
-            args.a_cache,
+            "--tag=%r set (harness-parameter sweep) -- skipping the Step 7.6 equality "
+            "check and the determinism check, both only valid for the default window",
+            args.tag,
         )
+    else:
+        # One-time migration proof (Teil B's code simplification changed nothing)
+        # -- the gitignored 7.6 prediction caches this compares against are local
+        # working artefacts, not guaranteed to exist on a later run or a fresh
+        # checkout, so this step is skipped gracefully rather than failing.
+        if args.b_full_roll_cache.exists() and args.a_cache.exists():
+            b_full_roll_cache = pd.read_parquet(args.b_full_roll_cache)
+            a_cache = pd.read_parquet(args.a_cache)
+            for label, new_preds, old_cache in (
+                (
+                    "price_v2 L1 vs B_full_roll (7.6)",
+                    predictions[("price_v2", "L1")],
+                    b_full_roll_cache,
+                ),
+                ("price_v1 L1 vs A (7.6)", predictions[("price_v1", "L1")], a_cache),
+            ):
+                common_index = new_preds.index.intersection(old_cache.index)
+                diff = (
+                    new_preds.loc[common_index, "y_pred"] - old_cache.loc[common_index, "y_pred"]
+                ).abs()
+                max_diff = float(diff.max())
+                logger.info(
+                    "equality check [%s]: max |diff| = %.3e over %d common hours -- %s",
+                    label,
+                    max_diff,
+                    len(common_index),
+                    "PASS" if max_diff <= 1e-9 else "RUECKFRAGE: FAILED",
+                )
+        else:
+            logger.info(
+                "no Step 7.6 prediction caches found (%s / %s) -- skipping the one-time "
+                "migration equality check",
+                args.b_full_roll_cache,
+                args.a_cache,
+            )
 
-    # --- Determinism check: price_v2 L2, first 20 folds, run twice ----------
-    probe_folds = folds[:20]
-    model_a = build_price_model(PRICE_V2, long_history)
-    model_b = build_price_model(PRICE_V2, long_history)
-    probe_a = _run_reference_backtest(y, model_a, probe_folds, l2_matrix_v2)
-    probe_b = _run_reference_backtest(y, model_b, probe_folds, l2_matrix_v2)
-    determinism_diff = float((probe_a["y_pred"] - probe_b["y_pred"]).abs().max())
-    logger.info(
-        "determinism check [price_v2 L2, first 20 folds]: max |diff| = %.3e -- %s",
-        determinism_diff,
-        "PASS" if determinism_diff == 0.0 else "RUECKFRAGE: FAILED",
-    )
+        # --- Determinism check: price_v2 L2, first 20 folds, run twice ------
+        probe_folds = folds[:20]
+        model_a = build_price_model(config_v2, long_history)
+        model_b = build_price_model(config_v2, long_history)
+        probe_a = _run_reference_backtest(y, model_a, probe_folds, l2_matrix_v2)
+        probe_b = _run_reference_backtest(y, model_b, probe_folds, l2_matrix_v2)
+        determinism_diff = float((probe_a["y_pred"] - probe_b["y_pred"]).abs().max())
+        logger.info(
+            "determinism check [price_v2 L2, first 20 folds]: max |diff| = %.3e -- %s",
+            determinism_diff,
+            "PASS" if determinism_diff == 0.0 else "RUECKFRAGE: FAILED",
+        )
 
     # --- C.4 outputs ----------------------------------------------------------
     args.out_dir.mkdir(parents=True, exist_ok=True)
 
     snapshot_rows = [file_fingerprint(p) for p in A2_INPUT_FILES] + [renewables_fp]
-    pd.DataFrame(snapshot_rows).to_csv(args.out_dir / "data_snapshot.csv", index=False)
+    snapshot_path = args.out_dir / f"data_snapshot{suffix}.csv"
+    pd.DataFrame(snapshot_rows).to_csv(snapshot_path, index=False)
 
     bin_assignment_l1 = rl_bin(l1_matrix["residual_load_forecast"]).reindex(index)
     bin_assignment_l2 = rl_bin(l2_matrix["residual_load_forecast"]).reindex(index)
     bin_assignment_by_rung = {"L1": bin_assignment_l1, "L2": bin_assignment_l2}
     oor_flag_l1 = ttf_out_of_range_flag(
-        long_history["ttf_lag"], index, train_span_days=TRAIN_SPAN_DAYS
+        long_history["ttf_lag"], index, train_span_days=config_v2.train_span_days
     )
 
     metrics_rows = []
@@ -460,7 +582,8 @@ def main() -> None:
                 }
             )
 
-    pd.DataFrame(metrics_rows).to_csv(args.out_dir / "reference_metrics.csv", index=False)
+    metrics_path = args.out_dir / f"reference_metrics{suffix}.csv"
+    pd.DataFrame(metrics_rows).to_csv(metrics_path, index=False)
 
     # --- C.5 DM-tests: price_v2 vs price_v1 (L1, L2); L2 vs L1 (each version) ---
     dm_rows = []
@@ -504,7 +627,8 @@ def main() -> None:
                         "p_value": result.p_value,
                     }
                 )
-    pd.DataFrame(dm_rows).to_csv(args.out_dir / "reference_dm_test.csv", index=False)
+    dm_test_path = args.out_dir / f"reference_dm_test{suffix}.csv"
+    pd.DataFrame(dm_rows).to_csv(dm_test_path, index=False)
 
     # --- reference_predictions.parquet ---------------------------------------
     export_rows = []
@@ -530,7 +654,7 @@ def main() -> None:
         )
         export_rows.append(row)
     export = pd.concat(export_rows, ignore_index=True)
-    export_path = args.out_dir / "reference_predictions.parquet"
+    export_path = args.out_dir / f"reference_predictions{suffix}.parquet"
     export.to_parquet(export_path)
     size_mb = export_path.stat().st_size / (1024 * 1024)
     logger.info("reference_predictions.parquet: %.2f MB (%d rows)", size_mb, len(export))
@@ -556,6 +680,48 @@ def main() -> None:
         "done; wrote 4 files to %s (beta_monthly.csv comes from build_price_beta_table.py)",
         args.out_dir,
     )
+
+    # --- MLflow: log harness params, headline metrics, and the written -------
+    # artefacts -- so train-span-days/test-start/test-end/window/refit-every
+    # sweeps are queryable and comparable (mlflow ui / mlflow.search_runs),
+    # not just loose CSV files.
+    written_paths = [snapshot_path, metrics_path, dm_test_path, export_path]
+    mlflow.set_tracking_uri("file:./mlruns")
+    mlflow.set_experiment(PRICE_MODEL_EXPERIMENT_NAME)
+    run_name = f"price_reference_{args.tag}" if args.tag else "price_reference"
+    with mlflow.start_run(run_name=run_name):
+        mlflow.set_tags({"study": args.study, "note": args.note})
+        mlflow.log_params(
+            {
+                "train_span_days": config_v2.train_span_days,
+                "refit_every": config_v2.refit_every,
+                "test_start": str(test_start.date()),
+                "test_end": str(test_end.date()),
+                "window": args.window,
+                "tag": args.tag,
+                "n_folds": len(folds),
+            }
+        )
+        for (version, rung), preds in predictions.items():
+            overall = _metrics_row(preds["y_true"], preds["y_pred"])
+            mlflow.log_metrics(
+                {
+                    f"{version}_{rung}_rmse": overall["rmse"],
+                    f"{version}_{rung}_mae": overall["mae"],
+                    f"{version}_{rung}_bias": overall["bias"],
+                }
+            )
+        for dm_row in dm_rows:
+            comparison = cast(str, dm_row["comparison"])
+            if (
+                comparison.startswith("price_v2_vs_price_v1")
+                and dm_row["period"] == "overall"
+                and dm_row["block"] == "daily"
+            ):
+                mlflow.log_metric(f"dm_pvalue_{comparison}", cast(float, dm_row["p_value"]))
+        for path in written_paths:
+            mlflow.log_artifact(str(path))
+    logger.info("MLflow price_reference run logged (experiment=%r).", PRICE_MODEL_EXPERIMENT_NAME)
 
 
 if __name__ == "__main__":
