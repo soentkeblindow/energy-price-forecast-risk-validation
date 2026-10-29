@@ -197,9 +197,23 @@ def _get_or_run(
     suffix: str = "",
 ) -> pd.DataFrame:
     cache_path = preds_dir / f"price_reference_preds_{name}{suffix}.parquet"
+    expected_days = {f.delivery_day for f in folds}
     if cache_path.exists():
-        logger.info("%s: loaded cached predictions from %s", name, cache_path)
-        return pd.read_parquet(cache_path)
+        cached = pd.read_parquet(cache_path)
+        cached_days = set(pd.DatetimeIndex(cached["delivery_day"]))
+        if cached_days == expected_days:
+            logger.info("%s: loaded cached predictions from %s", name, cache_path)
+            return cached
+        logger.info(
+            "%s: cache at %s covers a different window (%d cached vs %d requested delivery "
+            "day(s)) -- the cache filename is keyed by --tag only, not the actual window, "
+            "so a stale cache from a previous --tag reuse is not trustworthy here; "
+            "recomputing",
+            name,
+            cache_path,
+            len(cached_days),
+            len(expected_days),
+        )
     t0 = time.monotonic()
     preds = _run_reference_backtest(y, model, folds, x, refit_every=refit_every)
     elapsed = time.monotonic() - t0
@@ -365,8 +379,29 @@ def _parse_args() -> argparse.Namespace:
 def main() -> None:
     args = _parse_args()
 
+    # is_full_scope/is_canonical_reference are needed before the hash check
+    # below (only the canonical run is gated on it) -- computed here from
+    # args alone, the rest of this block (config_v1/config_v2/suffixes/
+    # out_dir) stays where it was, after the data is loaded.
+    is_full_scope = set(args.versions) == set(_VALID_VERSIONS) and set(args.rungs) == set(
+        _VALID_RUNGS
+    )
+    is_canonical_reference = is_full_scope and not args.tag
+
     # --- Hash check against this script's own last recorded data stand -----
-    if args.snapshot_csv.exists():
+    # Only meaningful for the canonical reference run: a --tag'd sweep or a
+    # narrower --versions/--rungs scope never touches data_snapshot.csv, so
+    # upstream data having moved since the last canonical run is not this
+    # run's concern.
+    if not is_canonical_reference:
+        logger.info(
+            "non-canonical run (tag=%r, versions=%s, rungs=%s) -- skipping the data-stand "
+            "hash check, only meaningful for the canonical reference run",
+            args.tag,
+            args.versions,
+            args.rungs,
+        )
+    elif args.snapshot_csv.exists():
         snapshot = pd.read_csv(args.snapshot_csv, index_col="filename")
         for path in A2_INPUT_FILES:
             current = file_fingerprint(path)
@@ -406,10 +441,6 @@ def main() -> None:
     config_v2 = dataclasses.replace(
         PRICE_V2, train_span_days=args.train_span_days, refit_every=args.refit_every
     )
-    is_full_scope = set(args.versions) == set(_VALID_VERSIONS) and set(args.rungs) == set(
-        _VALID_RUNGS
-    )
-    is_canonical_reference = is_full_scope and not args.tag
     cache_suffix = f"_{args.tag}" if args.tag else ""
     if args.tag:
         agg_suffix = cache_suffix
