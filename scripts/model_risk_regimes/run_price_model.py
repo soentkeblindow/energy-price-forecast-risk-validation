@@ -134,7 +134,13 @@ def _first_valid_local_day(frame: pd.DataFrame, columns: list[str]) -> pd.Timest
 
 
 def _run_reference_backtest(
-    y: pd.Series, model: object, folds: list[Fold], x: pd.DataFrame, *, refit_every: int = 1
+    y: pd.Series,
+    model: object,
+    folds: list[Fold],
+    x: pd.DataFrame,
+    *,
+    refit_every: int = 1,
+    name: str = "backtest",
 ) -> pd.DataFrame:
     """Drive ``model`` through ``folds``. On every ``refit_every``-th fold
     the model is refit on that fold's train slice; the default of 1 matches
@@ -145,11 +151,18 @@ def _run_reference_backtest(
     ``model`` exposes ``predict_components`` (price_v2's
     MeritOrderForecaster), captures tree_pred/beta/srmc/rl_bin/anchor_month
     alongside y_pred directly from the same pass -- no second, post-hoc
-    computation.
+    computation. Logs progress at 25/50/75/100% of folds, same milestone
+    convention as ``run_backtest``.
     """
     has_components = hasattr(model, "predict_components")
+    n_folds = len(folds)
+    milestones = {max(0, int(n_folds * p) - 1) for p in (0.25, 0.5, 0.75)} | {n_folds - 1}
     records: list[pd.DataFrame] = []
     for i, fold in enumerate(folds):
+        if i in milestones:
+            logger.info(
+                "%s progress: %d/%d folds (%.0f%%)", name, i + 1, n_folds, 100 * (i + 1) / n_folds
+            )
         history = y.loc[fold.train_index]
         x_train = x.loc[fold.train_index]
         if i % refit_every == 0:
@@ -215,7 +228,7 @@ def _get_or_run(
             len(expected_days),
         )
     t0 = time.monotonic()
-    preds = _run_reference_backtest(y, model, folds, x, refit_every=refit_every)
+    preds = _run_reference_backtest(y, model, folds, x, refit_every=refit_every, name=name)
     elapsed = time.monotonic() - t0
     logger.info(
         "%s: %d test hours in %.1fs (%.3fs/fold)", name, len(preds), elapsed, elapsed / len(folds)
@@ -576,8 +589,12 @@ def main() -> None:
         probe_folds = folds[:20]
         model_a = build_price_model(config_v2, long_history)
         model_b = build_price_model(config_v2, long_history)
-        probe_a = _run_reference_backtest(y, model_a, probe_folds, l2_matrix_v2)
-        probe_b = _run_reference_backtest(y, model_b, probe_folds, l2_matrix_v2)
+        probe_a = _run_reference_backtest(
+            y, model_a, probe_folds, l2_matrix_v2, name="determinism-probe-a"
+        )
+        probe_b = _run_reference_backtest(
+            y, model_b, probe_folds, l2_matrix_v2, name="determinism-probe-b"
+        )
         determinism_diff = float((probe_a["y_pred"] - probe_b["y_pred"]).abs().max())
         logger.info(
             "determinism check [price_v2 L2, first 20 folds]: max |diff| = %.3e -- %s",
@@ -699,14 +716,10 @@ def main() -> None:
         ("L2_vs_L1_price_v1", ("price_v1", "L2"), ("price_v1", "L1")),
         ("L2_vs_L1_price_v2", ("price_v2", "L2"), ("price_v2", "L1")),
     ]
+    n_comparisons_skipped = 0
     for comparison_name, challenger_key, baseline_key in comparisons:
         if challenger_key not in predictions or baseline_key not in predictions:
-            logger.info(
-                "comparison %s skipped -- not computed in this run (versions=%s, rungs=%s)",
-                comparison_name,
-                args.versions,
-                args.rungs,
-            )
+            n_comparisons_skipped += 1
             continue
         challenger = predictions[challenger_key]
         baseline = predictions[baseline_key]
@@ -740,6 +753,15 @@ def main() -> None:
                         "p_value": result.p_value,
                     }
                 )
+    if n_comparisons_skipped:
+        logger.info(
+            "%d/%d DM-test comparison(s) skipped -- not computed in this run "
+            "(versions=%s, rungs=%s)",
+            n_comparisons_skipped,
+            len(comparisons),
+            args.versions,
+            args.rungs,
+        )
     dm_test_path = out_dir / f"reference_dm_test{agg_suffix}.csv"
     pd.DataFrame(dm_rows).to_csv(dm_test_path, index=False)
 
