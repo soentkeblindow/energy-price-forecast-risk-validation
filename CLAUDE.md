@@ -46,17 +46,23 @@ Enforced by `tests/test_dependency_rules.py` (AST-based, parametrized over every
 other script sets model parameters directly. `scripts/model_risk_regimes/
 run_price_model.py` is the main entry point to run it: by default
 `--versions price_v2 --rungs L2` only (the live case -- `price_v1` and L1,
-ENTSO-E's own forecasts never available live, are opt-in). Its reference
-numbers live in `outputs/results/price_v2/` (`run_price_model.py --versions
-price_v1,price_v2 --rungs L1,L2` -- what `make price-model` runs --
-/`build_price_beta_table.py` regenerate them; `run_price_model.py` also
-takes harness-parameter flags -- `--train-span-days`/`--test-start`/
-`--test-end`/`--window`/`--refit-every`, gated behind a required `--tag`
--- for one-off backtest-window sweeps without touching the canonical
-reference files or MeritOrderForecaster's own structure). New measurements against
+ENTSO-E's own forecasts never available live, are opt-in). Every run
+writes to `data/processed/price_model_runs/` (gitignored) by default, no
+exceptions -- the script has no notion of one "canonical" invocation.
+Its reference numbers in `outputs/results/price_v2/` (`build_price_beta_table.py`
+also contributes to that directory) are published by deliberately passing
+`--out-dir outputs/results/price_v2` -- what `make price-model` runs,
+alongside `--versions price_v1,price_v2 --rungs L1,L2`. `run_price_model.py`
+also takes harness-parameter flags -- `--train-span-days`/`--test-start`/
+`--test-end`/`--window`/`--refit-every`/`--drop-features`, gated behind a
+required `--tag` so two different sweeps never overwrite each other's
+output files (never MeritOrderForecaster's own structure). New measurements against
 the hourly model run against `price_v2`, not against an ad hoc
 reconfiguration of `MeritOrderForecaster` (it now only supports
-`price_v2`'s own path). Completed Sprint 7 studies (merit-order
+`price_v2`'s own path, with one deliberate ablation exception:
+`hide_from_tree`/`--drop-features` can hide a column from the *inner*
+LightGBM tree while SRMC/beta are still computed from it as always).
+Completed Sprint 7 studies (merit-order
 structure, variant comparisons, error decomposition, the rejected
 seasonal-window/similar-day/French-price features, the Step 7.6
 selection measurement) were deleted from `main` in Step 7.7's cleanup

@@ -88,7 +88,7 @@ volume-weighted-averaged into hourly values
 (`common/data/normalize.py::to_hourly_vwap`) before either model sees
 them — this model operates purely at hourly resolution, see Section 2.
 
-**Data stand** (Step 7.7, Teil C — `outputs/results/price_v2/data_snapshot.csv`):
+**Data stand** (Step 7.7, Teil C — [`data_snapshot.csv`](price_v2/data_snapshot.csv)):
 
 | File | Period | Rows | SHA-256 |
 |---|---|---|---|

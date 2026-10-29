@@ -6,14 +6,19 @@ information state, the only one that matters day to day. `price_v1`
 (the pre-price_v2 baseline) and L1 (the same columns from ENTSO-E's own
 day-ahead forecasts, an academic upper bound never available live) are
 opt-in via --versions/--rungs, for the one case that still needs them: the
-full price_v1-vs-price_v2 / L1-vs-L2 comparison behind the published
-reference numbers in outputs/results/price_v2/ (what `make price-model`
-runs, passing --versions price_v1,price_v2 --rungs L1,L2). Only in that
-full-scope, no-overrides, no-tag configuration does this script also
-re-run the Step 7.6/7.7 equality and determinism checks and write to the
-canonical (unsuffixed) output files -- any narrower --versions/--rungs
-selection, or any --tag, writes to its own suffixed files instead so
-nothing ever silently overwrites the canonical reference.
+full price_v1-vs-price_v2 / L1-vs-L2 comparison (what `make price-model`
+runs, passing --versions price_v1,price_v2 --rungs L1,L2). The Step 7.6/7.7
+equality and determinism checks run whenever the combination they need
+is present (price_v2 L1 + price_v1 L1 for equality; price_v2 L2 for
+determinism), skipped with a log line otherwise -- same as the DM-test
+comparisons below them.
+
+Every run writes to data/processed/price_model_runs/ (gitignored) by
+default, no exceptions -- there is no "canonical" invocation this script
+treats specially. Pass --out-dir outputs/results/price_v2 yourself when
+you deliberately want to publish a run's output into the public,
+checked-in results tree; that is a conscious choice for the repo owner to
+make, not something this script infers from which flags happen to be set.
 
 --train-span-days/--test-start/--test-end/--window/--refit-every override
 the walk-forward harness (never MeritOrderForecaster's own structure --
@@ -280,19 +285,11 @@ def _parse_args() -> argparse.Namespace:
         type=Path,
         default=None,
         help="Where reference_metrics/_dm_test/_predictions/data_snapshot are written. "
-        "Default: outputs/results/price_v2 (the public, checked-in directory) for the "
-        "canonical full-scope reference run; data/processed/price_model_runs (gitignored) "
-        "for anything narrower (--versions/--rungs/--tag) -- keeps one-off/sweep output "
-        "out of the public results tree.",
+        "Default: data/processed/price_model_runs (gitignored) for every run, no "
+        "exceptions. Point this at outputs/results/price_v2 yourself (e.g. for `make "
+        "price-model`) when you deliberately want to publish a run's output there.",
     )
     p.add_argument("--preds-dir", type=Path, default=Path("data/processed/price_reference_preds"))
-    p.add_argument(
-        "--snapshot-csv",
-        type=Path,
-        default=Path("outputs/results/price_v2/data_snapshot.csv"),
-        help="Compared against before the run if present (this script's own "
-        "previous data_snapshot.csv output); skipped on a first run.",
-    )
     p.add_argument(
         "--b-full-roll-cache",
         type=Path,
@@ -361,12 +358,11 @@ def _parse_args() -> argparse.Namespace:
         default="",
         help="Suffix for every output file of this run (prediction caches, "
         "reference_metrics/_dm_test/_predictions, data_snapshot, the MLflow run name) "
-        "-- keeps a harness-parameter sweep from touching the canonical "
-        "outputs/results/price_v2/ and data/processed/price_reference_preds/ files. "
-        "Required whenever --train-span-days/--refit-every/--test-start/--test-end/"
-        "--window deviates from its default. (--versions/--rungs narrower than the "
-        "full set never require --tag -- they get their own, automatically-derived "
-        "output suffix instead.)",
+        "-- keeps two different sweeps from overwriting each other's files in the "
+        "shared output directory. Required whenever --train-span-days/--refit-every/"
+        "--test-start/--test-end/--window/--drop-features deviates from its default. "
+        "(--versions/--rungs narrower than the full set never require --tag -- they "
+        "get their own, automatically-derived output suffix instead.)",
     )
     p.add_argument(
         "--drop-features",
@@ -398,8 +394,7 @@ def _parse_args() -> argparse.Namespace:
         p.error(
             "--tag is required when overriding --train-span-days/--refit-every/"
             "--test-start/--test-end/--window/--drop-features -- it suffixes every "
-            "output file so a harness-parameter sweep never overwrites the canonical "
-            "price_v2 reference."
+            "output file so two different sweeps never overwrite each other's files."
         )
     return args
 
@@ -407,42 +402,13 @@ def _parse_args() -> argparse.Namespace:
 def main() -> None:
     args = _parse_args()
 
-    # is_full_scope/is_canonical_reference are needed before the hash check
-    # below (only the canonical run is gated on it) -- computed here from
-    # args alone, the rest of this block (config_v1/config_v2/suffixes/
-    # out_dir) stays where it was, after the data is loaded.
+    # is_full_scope is needed below for the output-filename suffix logic
+    # (an unsuffixed run is only ever the complete price_v1+price_v2/L1+L2
+    # comparison).
     is_full_scope = set(args.versions) == set(_VALID_VERSIONS) and set(args.rungs) == set(
         _VALID_RUNGS
     )
-    is_canonical_reference = is_full_scope and not args.tag
 
-    # --- Hash check against this script's own last recorded data stand -----
-    # Only meaningful for the canonical reference run: a --tag'd sweep or a
-    # narrower --versions/--rungs scope never touches data_snapshot.csv, so
-    # upstream data having moved since the last canonical run is not this
-    # run's concern.
-    if not is_canonical_reference:
-        logger.info(
-            "non-canonical run (tag=%r, versions=%s, rungs=%s) -- skipping the data-stand "
-            "hash check, only meaningful for the canonical reference run",
-            args.tag,
-            args.versions,
-            args.rungs,
-        )
-    elif args.snapshot_csv.exists():
-        snapshot = pd.read_csv(args.snapshot_csv, index_col="filename")
-        for path in A2_INPUT_FILES:
-            current = file_fingerprint(path)
-            recorded = snapshot.loc[path.name, "sha256"]
-            if current["sha256"] != recorded:
-                logger.error(
-                    "RUECKFRAGE: data stand changed since the last recorded run for %s -- stopping.",
-                    path,
-                )
-                return
-        logger.info("hash check passed against %s", args.snapshot_csv)
-    else:
-        logger.info("no prior %s -- first run, skipping the hash check", args.snapshot_csv)
     renewables_fp = _renewables_fingerprint(args.renewables_path)
     logger.info("renewables file fingerprint captured: %s", renewables_fp["sha256"])
 
@@ -526,11 +492,7 @@ def main() -> None:
         agg_suffix = ""
     else:
         agg_suffix = "_" + "_".join(args.versions) + "_" + "".join(args.rungs)
-    out_dir = args.out_dir or (
-        Path("outputs/results/price_v2")
-        if is_canonical_reference
-        else Path("data/processed/price_model_runs")
-    )
+    out_dir = args.out_dir or Path("data/processed/price_model_runs")
 
     # --- Common L1/L2 window (same derivation as 7.3) -----------------------
     l2_first_valid_day = _first_valid_local_day(
@@ -601,56 +563,64 @@ def main() -> None:
     fold_counts = {k: v["delivery_day"].nunique() for k, v in predictions.items()}
     logger.info("delivery-day counts per run (must match): %s", fold_counts)
 
-    # --- C.2 Equality checks against Step 7.6's caches -----------------------
-    # Only valid for the full-scope, no-tag canonical reference run: a
-    # narrower --versions/--rungs selection or a harness-parameter sweep has
-    # nothing comparable in Step 7.6's caches to check against.
-    if not is_canonical_reference:
+    # --- C.2 Equality check against Step 7.6's caches -------------------------
+    # Runs whenever both combinations it needs were actually computed this
+    # run (price_v2 L1 + price_v1 L1) -- not tied to any particular
+    # --tag/--versions/--rungs configuration, same "skip gracefully, don't
+    # treat one configuration as special" principle as the DM-test
+    # comparisons below.
+    if ("price_v2", "L1") not in predictions or ("price_v1", "L1") not in predictions:
         logger.info(
-            "non-canonical run (tag=%r, versions=%s, rungs=%s) -- skipping the Step 7.6 "
-            "equality check and the determinism check, both only valid for the full "
-            "price_v1+price_v2/L1+L2 default window",
-            args.tag,
+            "equality check skipped -- needs both price_v2/L1 and price_v1/L1, not "
+            "computed in this run (versions=%s, rungs=%s)",
             args.versions,
             args.rungs,
         )
-    else:
+    elif args.b_full_roll_cache.exists() and args.a_cache.exists():
         # One-time migration proof (Teil B's code simplification changed nothing)
         # -- the gitignored 7.6 prediction caches this compares against are local
         # working artefacts, not guaranteed to exist on a later run or a fresh
         # checkout, so this step is skipped gracefully rather than failing.
-        if args.b_full_roll_cache.exists() and args.a_cache.exists():
-            b_full_roll_cache = pd.read_parquet(args.b_full_roll_cache)
-            a_cache = pd.read_parquet(args.a_cache)
-            for label, new_preds, old_cache in (
-                (
-                    "price_v2 L1 vs B_full_roll (7.6)",
-                    predictions[("price_v2", "L1")],
-                    b_full_roll_cache,
-                ),
-                ("price_v1 L1 vs A (7.6)", predictions[("price_v1", "L1")], a_cache),
-            ):
-                common_index = new_preds.index.intersection(old_cache.index)
-                diff = (
-                    new_preds.loc[common_index, "y_pred"] - old_cache.loc[common_index, "y_pred"]
-                ).abs()
-                max_diff = float(diff.max())
-                logger.info(
-                    "equality check [%s]: max |diff| = %.3e over %d common hours -- %s",
-                    label,
-                    max_diff,
-                    len(common_index),
-                    "PASS" if max_diff <= 1e-9 else "RUECKFRAGE: FAILED",
-                )
-        else:
+        b_full_roll_cache = pd.read_parquet(args.b_full_roll_cache)
+        a_cache = pd.read_parquet(args.a_cache)
+        for label, new_preds, old_cache in (
+            (
+                "price_v2 L1 vs B_full_roll (7.6)",
+                predictions[("price_v2", "L1")],
+                b_full_roll_cache,
+            ),
+            ("price_v1 L1 vs A (7.6)", predictions[("price_v1", "L1")], a_cache),
+        ):
+            common_index = new_preds.index.intersection(old_cache.index)
+            diff = (
+                new_preds.loc[common_index, "y_pred"] - old_cache.loc[common_index, "y_pred"]
+            ).abs()
+            max_diff = float(diff.max())
             logger.info(
-                "no Step 7.6 prediction caches found (%s / %s) -- skipping the one-time "
-                "migration equality check",
-                args.b_full_roll_cache,
-                args.a_cache,
+                "equality check [%s]: max |diff| = %.3e over %d common hours -- %s",
+                label,
+                max_diff,
+                len(common_index),
+                "PASS" if max_diff <= 1e-9 else "RUECKFRAGE: FAILED",
             )
+    else:
+        logger.info(
+            "no Step 7.6 prediction caches found (%s / %s) -- skipping the one-time "
+            "migration equality check",
+            args.b_full_roll_cache,
+            args.a_cache,
+        )
 
-        # --- Determinism check: price_v2 L2, first 20 folds, run twice ------
+    # --- Determinism check: price_v2 L2, first 20 folds, run twice ------------
+    # Runs whenever price_v2/L2 was actually computed this run.
+    if ("price_v2", "L2") not in predictions:
+        logger.info(
+            "determinism check skipped -- needs price_v2/L2, not computed in this run "
+            "(versions=%s, rungs=%s)",
+            args.versions,
+            args.rungs,
+        )
+    else:
         probe_folds = folds[:20]
         model_a = build_price_model(config_v2, long_history)
         model_b = build_price_model(config_v2, long_history)
