@@ -76,7 +76,7 @@ def _parse_args() -> argparse.Namespace:
         "--median-path", default=Path("data/processed/preds_lgbm_q50.parquet"), type=Path
     )
     p.add_argument("--mean-path", default=Path("data/processed/preds_lgbm_mean.parquet"), type=Path)
-    p.add_argument("--interim-path", default=Path("data/interim/hourly.parquet"), type=Path)
+    p.add_argument("--interim-path", default=Path("data/interim/hourly_data.parquet"), type=Path)
     p.add_argument("--recent-months", type=int, default=12)
     p.add_argument("--out", default=Path("outputs/results/objective_comparison.csv"), type=Path)
     p.add_argument("--dm-out", default=Path("outputs/results/dm_test_objective.csv"), type=Path)

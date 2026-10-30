@@ -25,12 +25,12 @@ def main() -> None:
         "--start", type=str, default="2020-01-01", help="Start date (UTC) in YYYY-MM-DD format."
     )
     parser.add_argument(
-        "--end", type=str, default="2025-12-31", help="End date (UTC) in YYYY-MM-DD format."
+        "--end", type=str, default="2026-10-29", help="End date (UTC) in YYYY-MM-DD format."
     )
     parser.add_argument(
         "--out",
         type=Path,
-        default=Path("data/interim/hourly.parquet"),
+        default=Path("data/interim/hourly_data.parquet"),
         help="Output path for the interim Parquet file.",
     )
     args = parser.parse_args()

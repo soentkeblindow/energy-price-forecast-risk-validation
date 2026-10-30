@@ -163,7 +163,7 @@ def load_all_data(
 # Interim layer — normalised hourly grid
 # ---------------------------------------------------------------------------
 
-_INTERIM_PATH = Path("data/interim/hourly.parquet")
+_INTERIM_PATH = Path("data/interim/hourly_data.parquet")
 
 # Timestamp of the resolution break in the raw data (hourly → 15-min).
 _BREAK_TS = pd.Timestamp("2025-09-30 22:00", tz="UTC")
@@ -228,7 +228,7 @@ def load_interim_hourly(path: Path = _INTERIM_PATH) -> pd.DataFrame:
 # Processed layer — engineered feature matrix
 # ---------------------------------------------------------------------------
 
-_FEATURES_PATH = Path("data/processed/features.parquet")
+_FEATURES_PATH = Path("data/processed/features_hourly.parquet")
 
 
 def load_processed_features(

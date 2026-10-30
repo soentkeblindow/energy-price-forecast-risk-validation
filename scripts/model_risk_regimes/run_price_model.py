@@ -82,8 +82,8 @@ OUTLIER_DAYS = ("2026-10-11", "2026-10-18", "2026-10-19")
 UPPER_THIRD_BINS = (8, 9, 10)
 
 A2_INPUT_FILES: tuple[Path, ...] = (
-    Path("data/interim/hourly_merit_order.parquet"),
-    Path("data/processed/features_merit_order.parquet"),
+    Path("data/interim/hourly_data.parquet"),
+    Path("data/processed/features_hourly.parquet"),
 )
 RENEWABLES_FILE = Path("data/processed/renewables_forecast_rolling365_l2.parquet")
 
@@ -276,11 +276,9 @@ def _metrics_row(y_true: pd.Series, y_pred: pd.Series) -> dict[str, float]:
 
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument("--data-path", type=Path, default=Path("data/interim/hourly_data.parquet"))
     p.add_argument(
-        "--data-path", type=Path, default=Path("data/interim/hourly_merit_order.parquet")
-    )
-    p.add_argument(
-        "--features-path", type=Path, default=Path("data/processed/features_merit_order.parquet")
+        "--features-path", type=Path, default=Path("data/processed/features_hourly.parquet")
     )
     p.add_argument("--renewables-path", type=Path, default=RENEWABLES_FILE)
     p.add_argument(

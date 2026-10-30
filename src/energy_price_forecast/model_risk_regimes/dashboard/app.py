@@ -184,6 +184,11 @@ def _render_risk_tab(tables: SummaryTables) -> None:
 def main() -> None:
     st.set_page_config(page_title="Day-Ahead Price Forecast -- Backtest Explorer", layout="wide")
     st.title("Day-Ahead Price Forecast -- Backtest Explorer")
+    st.caption(
+        "Data window: 2020-01-01 - 2025-12-31. The underlying data file now grows "
+        "past this date; these published numbers stay pinned to it -- see "
+        "outputs/archive_251231/ and data/README.md."
+    )
 
     results_dir = _resolve_results_dir()
     try:

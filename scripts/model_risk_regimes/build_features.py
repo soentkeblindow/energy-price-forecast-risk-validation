@@ -20,13 +20,13 @@ def main() -> None:
     parser.add_argument(
         "--data-path",
         type=Path,
-        default=Path("data/interim/hourly.parquet"),
+        default=Path("data/interim/hourly_data.parquet"),
         help="Path to the interim hourly Parquet file.",
     )
     parser.add_argument(
         "--out",
         type=Path,
-        default=Path("data/processed/features.parquet"),
+        default=Path("data/processed/features_hourly.parquet"),
         help="Output path for the feature matrix.",
     )
     args = parser.parse_args()

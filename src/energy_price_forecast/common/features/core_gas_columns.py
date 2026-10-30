@@ -80,7 +80,7 @@ FUNDAMENTALS_COLUMNS: tuple[str, ...] = (
 )
 
 # L1 (core_gas, built from ENTSO-E forecasts): a pure column subset of this
-# repo's existing full feature matrix (features_merit_order.parquet) -- no
+# repo's existing full feature matrix (features_hourly.parquet) -- no
 # new data build needed. L2 swaps FUNDAMENTALS_COLUMNS' 5 non-load columns
 # for NWP-reconstructed values (7.3 section 3.3), same column names.
 L1_COLUMNS: tuple[str, ...] = (

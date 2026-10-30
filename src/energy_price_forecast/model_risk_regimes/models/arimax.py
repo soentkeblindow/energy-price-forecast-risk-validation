@@ -29,7 +29,7 @@ _OPTIM_GTOL: float = 1e-3  # L-BFGS-B gradient tolerance (scipy default 1e-5); r
 # dimension-sensitive, so we keep ONE fundamental (residual load forecast, NOT
 # its load/wind/solar components -- they are its exact linear combination), the
 # commodities, and the binary calendar/regime flags. Everything else from
-# features.parquet is dropped: price lags and rolling means (the ARMA part models
+# features_hourly.parquet is dropped: price lags and rolling means (the ARMA part models
 # price dynamics), forecast-error and cross-border lags, the calendar sin/cos
 # (replaced by the richer Fourier basis), and renewable_share (collinear).
 ARIMAX_EXOG_COLUMNS: tuple[str, ...] = (

@@ -78,7 +78,7 @@ def main() -> None:
     if len(common_index) == 0:
         raise ValueError("Prediction index is empty after loading.")
 
-    data_path = args.data_path or Path("data/interim/hourly.parquet")
+    data_path = args.data_path or Path("data/interim/hourly_data.parquet")
     y_lgbm = load_interim_hourly(data_path)["day_ahead_price"].reindex(common_index)
 
     curve_tables = [

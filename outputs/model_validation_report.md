@@ -2,7 +2,17 @@
 
 **Date:** 2026-07-15 (updated 2026-10-14, v1.1)
 **Version:** v1.1
+**Data window:** 2020-01-01 – 2025-12-31
 
+> **2026-10-30 update note:** the underlying interim/feature data file
+> (`data/interim/hourly_data.parquet` / `data/processed/features_hourly.parquet`)
+> was consolidated from two previously separate files and now grows forward
+> over time instead of stopping at 2025-12-31. The numbers in this report
+> are unaffected and remain pinned to the data window above; a permanent,
+> unchanged copy is archived under `outputs/archive_251231/`. Re-running
+> this report's scripts against today's data is expected to produce
+> different numbers going forward -- see `data/README.md` for why.
+>
 > **2026-10-14 update note:** a data-pipeline bugfix (commodity forward-fill
 > now counts real elapsed hours, not rows) changed every LightGBM/ARIMAX/Lasso
 > prediction throughout the history. Every number in this report has been

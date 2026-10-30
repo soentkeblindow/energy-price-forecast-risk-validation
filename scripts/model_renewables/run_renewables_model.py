@@ -67,7 +67,7 @@ from energy_price_forecast.model_renewables.models.renewables import (
 
 logger = logging.getLogger(__name__)
 
-_DATA_PATH = Path("data/interim/hourly_merit_order.parquet")
+_DATA_PATH = Path("data/interim/hourly_data.parquet")
 _WEATHER_PATH = Path("data/interim/weather_ifs_run00.parquet")
 _RENEWABLES_PATH = Path("data/processed/renewables_forecast_rolling365_l2.parquet")
 _SCRATCH_OUT_DIR = PROJECT_ROOT / "data" / "processed" / "renewables_runs"
@@ -166,8 +166,7 @@ def _parse_args() -> argparse.Namespace:
         type=Path,
         default=_DATA_PATH,
         help="Interim hourly Parquet to take the targets (wind/solar generation forecast "
-        "columns) from. Default is the live-extending file, not the frozen "
-        "data/interim/hourly.parquet.",
+        "columns) from. Default is the single, live-extending data/interim/hourly_data.parquet.",
     )
     p.add_argument("--weather-path", type=Path, default=_WEATHER_PATH)
     p.add_argument(

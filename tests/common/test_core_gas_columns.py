@@ -8,7 +8,7 @@ from energy_price_forecast.common.features.core_gas_columns import (
 )
 
 # The known full feature set (L0), from a real run of build_features.py over
-# hourly_merit_order.parquet -- kept here as a plain list rather than reading
+# hourly_data.parquet -- kept here as a plain list rather than reading
 # the actual (gitignored, environment-dependent) parquet file, so this test
 # does not depend on local data state.
 _L0_COLUMNS = [

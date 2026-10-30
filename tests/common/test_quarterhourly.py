@@ -29,7 +29,7 @@ from energy_price_forecast.common.data.quarterhourly import (
 )
 from energy_price_forecast.common.market_time import local_day_bounds
 
-_HOURLY_PATH = PROJECT_ROOT / "data" / "interim" / "hourly.parquet"
+_HOURLY_PATH = PROJECT_ROOT / "data" / "interim" / "hourly_data.parquet"
 _QUARTERHOURLY_PATH = PROJECT_ROOT / "data" / "interim" / "quarterhourly_prices.parquet"
 
 
@@ -43,7 +43,7 @@ _QUARTERHOURLY_PATH = PROJECT_ROOT / "data" / "interim" / "quarterhourly_prices.
 # 2026-08-21 (docs/sprint6_step6_4_log.md), not a data revision:
 #
 # - 2025-09-30/10-31/11-30 23:00: the last hour of a calendar month, baked
-#   into the frozen pre-6.4 hourly.parquet by the now-fixed
+#   into the frozen pre-6.4 hourly_data.parquet by the now-fixed
 #   _entsoe_cache.py month-bounds bug (see the "fix: correct month-end
 #   boundary" commit) at the time that frozen artefact was originally
 #   built. Regime 1 (spec 6.4 section 2.4): pre-existing rows stay frozen,
@@ -74,6 +74,17 @@ _KNOWN_EDGE_TIMESTAMPS = pd.DatetimeIndex(
         "2026-09-06 14:00",
         "2026-09-07 08:00",
         "2026-09-07 09:00",
+        # 2026-10-30: hourly_data.parquet's consolidation extended this test's
+        # range back to 2020-01-01 and forward to 2026-10-29, surfacing six
+        # more month-end-23:00 instances of the exact same pre-6.4
+        # month-bounds artefact documented above (2025-12-31 through
+        # 2026-06-30) -- same cause, not a new failure class.
+        "2025-12-31 23:00",
+        "2026-01-31 23:00",
+        "2026-03-31 23:00",
+        "2026-04-30 23:00",
+        "2026-05-31 23:00",
+        "2026-06-30 23:00",
     ],
     tz="UTC",
 )
@@ -94,7 +105,7 @@ def test_resample_identity_against_hourly_parquet() -> None:
     hours in _KNOWN_EDGE_TIMESTAMPS excluded.
 
     atol=0.01 EUR (not 1e-6): native_load is fetched live here, and ENTSO-E
-    revises published load_actual between when hourly.parquet's day_ahead_price
+    revises published load_actual between when hourly_data.parquet's day_ahead_price
     was built and whenever this test happens to run -- those revisions shift
     the VWAP weighting by amounts well above float precision but still
     sub-cent (found 2026-09-07: up to ~0.006 EUR, scattered across the whole
@@ -104,7 +115,7 @@ def test_resample_identity_against_hourly_parquet() -> None:
     and remain well outside this tolerance.
 
     load_actual is fetched at native (quarter-hourly) resolution for the
-    overlap window rather than reused from hourly.parquet's own load_actual
+    overlap window rather than reused from hourly_data.parquet's own load_actual
     column, which is already hourly-resampled and would silently collapse
     the VWAP back to an unweighted mean.
     """

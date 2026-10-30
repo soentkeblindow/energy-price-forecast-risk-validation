@@ -126,9 +126,7 @@ def _draw_figure(table: pd.DataFrame, fig_path: Path) -> None:
 
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument(
-        "--data-path", type=Path, default=Path("data/interim/hourly_merit_order.parquet")
-    )
+    p.add_argument("--data-path", type=Path, default=Path("data/interim/hourly_data.parquet"))
     p.add_argument(
         "--out-csv", type=Path, default=Path("outputs/results/hourly_model_v2/beta_monthly.csv")
     )

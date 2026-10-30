@@ -65,7 +65,7 @@ def _parse_args() -> argparse.Namespace:
             "(LightGBM vs. Lasso, LightGBM vs. ARIMAX)."
         )
     )
-    p.add_argument("--price-path", default=Path("data/interim/hourly.parquet"), type=Path)
+    p.add_argument("--price-path", default=Path("data/interim/hourly_data.parquet"), type=Path)
     p.add_argument("--pred-lgbm", default=Path("data/processed/preds_lgbm_q50.parquet"), type=Path)
     p.add_argument("--pred-lasso", default=Path("data/processed/backtest_lasso.parquet"), type=Path)
     p.add_argument(

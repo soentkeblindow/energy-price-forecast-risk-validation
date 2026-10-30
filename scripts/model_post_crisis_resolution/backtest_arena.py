@@ -14,7 +14,7 @@ therefore a best case, not a live-capability claim.
 evaluation/arena_walkforward.py::run_live_gate_backtest instead -- two
 independently trained hourly models (one per feature set, built per day
 via features/build_day.py's build_feature_set_for_day /
-build_original_feature_set_for_day, not the precomputed features.parquet),
+build_original_feature_set_for_day, not the precomputed features_hourly.parquet),
 --resolution quarterhourly (the binding run) or hourly (secondary, not
 binding).
 """

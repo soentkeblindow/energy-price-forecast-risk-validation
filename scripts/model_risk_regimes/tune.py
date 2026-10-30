@@ -77,8 +77,8 @@ def main() -> None:
 
     t0 = time.monotonic()
 
-    features_path = args.features_path or Path("data/processed/features.parquet")
-    data_path = args.data_path or Path("data/interim/hourly.parquet")
+    features_path = args.features_path or Path("data/processed/features_hourly.parquet")
+    data_path = args.data_path or Path("data/interim/hourly_data.parquet")
 
     df = load_interim_hourly(data_path)
     features = load_processed_features(features_path)

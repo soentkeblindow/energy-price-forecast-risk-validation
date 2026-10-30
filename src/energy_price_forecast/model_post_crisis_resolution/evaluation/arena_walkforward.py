@@ -13,7 +13,7 @@ Also provides run_live_gate_backtest: two independently trained hourly
 models, one per feature set (live vs. original), built per delivery day
 via features/build_day.py's build_feature_set_for_day /
 build_original_feature_set_for_day -- not from the precomputed
-features.parquet, a different code path.
+features_hourly.parquet, a different code path.
 """
 
 import datetime as dt

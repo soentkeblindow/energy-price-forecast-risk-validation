@@ -59,7 +59,7 @@ def _parse_args() -> argparse.Namespace:
         description="Sprint 4.4a: trading-book VaR/ES from three threshold sources."
     )
     p.add_argument("--preds-dir", default=Path("data/processed"), type=Path)
-    p.add_argument("--data-path", default=Path("data/interim/hourly.parquet"), type=Path)
+    p.add_argument("--data-path", default=Path("data/interim/hourly_data.parquet"), type=Path)
     p.add_argument("--out-dir", default=Path("data/processed"), type=Path)
     p.add_argument("--study", default="risk_hourly")
     p.add_argument("--note", default="", help="MLflow tag: free-text run note.")

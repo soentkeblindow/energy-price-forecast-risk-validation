@@ -104,7 +104,7 @@ def _parse_args() -> argparse.Namespace:
         description="Export report/dashboard figures, tables, and the prediction snapshot."
     )
     p.add_argument("--data-dir", default=Path("data/processed"), type=Path)
-    p.add_argument("--interim-path", default=Path("data/interim/hourly.parquet"), type=Path)
+    p.add_argument("--interim-path", default=Path("data/interim/hourly_data.parquet"), type=Path)
     p.add_argument("--output-dir", default=Path("outputs"), type=Path)
     # Fan-chart example window -- proposed default, confirm/override with the owner
     # (spec 5.1 §11 point 5): the highest-spread day in the test period

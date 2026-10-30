@@ -35,7 +35,7 @@ from energy_price_forecast.model_post_crisis_resolution.features.nwp_fundamental
     build_residual_load_nwp,
 )
 
-_HOURLY_PATH = PROJECT_ROOT / "data" / "interim" / "hourly.parquet"
+_HOURLY_PATH = PROJECT_ROOT / "data" / "interim" / "hourly_data.parquet"
 _RENEWABLES_PATH = PROJECT_ROOT / "data" / "processed" / "renewables_forecast_rolling365_l2.parquet"
 
 _needs_real_data = pytest.mark.skipif(

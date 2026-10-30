@@ -223,7 +223,7 @@ def main() -> None:
         }
     else:
         refit_every = args.refit_every if args.refit_every is not None else 7
-        features_path = args.features_path or Path("data/processed/features.parquet")
+        features_path = args.features_path or Path("data/processed/features_hourly.parquet")
         features = load_processed_features(features_path)
         y = price.reindex(features.index)
         x = features

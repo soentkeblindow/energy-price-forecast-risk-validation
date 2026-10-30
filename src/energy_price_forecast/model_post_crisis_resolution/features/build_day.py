@@ -106,7 +106,7 @@ def build_original_feature_set_for_day(
     Never a live candidate: contains DA_FORECAST-class renewables columns
     that the availability audit found unavailable at gate closure. Exists
     so both feature sets can be measured through the identical per-day code
-    path -- not by reading the precomputed features.parquet, a different
+    path -- not by reading the precomputed features_hourly.parquet, a different
     code path.
     """
     cfg = config if config is not None else FeatureConfig()

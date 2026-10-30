@@ -58,8 +58,10 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument(
         "--book-hourly-path", default=Path("data/processed/book_hourly.parquet"), type=Path
     )
-    p.add_argument("--features-path", default=Path("data/processed/features.parquet"), type=Path)
-    p.add_argument("--data-path", default=Path("data/interim/hourly.parquet"), type=Path)
+    p.add_argument(
+        "--features-path", default=Path("data/processed/features_hourly.parquet"), type=Path
+    )
+    p.add_argument("--data-path", default=Path("data/interim/hourly_data.parquet"), type=Path)
     p.add_argument("--out-dir", default=Path("data/processed"), type=Path)
     p.add_argument(
         "--max-bootstrap",

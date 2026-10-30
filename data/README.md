@@ -20,18 +20,52 @@ job just to reproduce numbers that already exist.
 | `processed/renewables_forecast_rolling365_l2.parquet` | `model_post_crisis_resolution` features (`loaders.load_renewables_predictions`) | originally copied rather than re-run to match the numbers already validated in `sbl-energy-forecast` (a full walk-forward is not cheap); to extend it with fresh data, use `scripts/model_renewables/run_renewables_model.py --store-new` (merges in only the new rows, see below -- replaces the old manual `run_renewables_backtest` workaround) |
 | `cache/weather_single_runs/ecmwf_ifs/` (926 per-run files) | input to `build_weather_artefact.py` above | Open-Meteo ECMWF IFS archive, one HTTP call per run -- **do not re-fetch**, the provider enforces a daily call limit |
 
-**`interim/hourly_merit_order.parquet` and `processed/features_merit_order.parquet`**
-(Sprint 7 Step 7.2, Phase 0) are not copied from the sibling repo -- they are
-the same generic `build_interim.py`/`build_features.py` pipeline above, run
-with their own `--start`/`--end`/`--out`/`--data-path` flags instead of the
-shared `hourly.parquet`/`features.parquet` defaults, so `hourly_model_v2`'s own
-longer history (back to 2019, needed for the beta long-history side channel)
-doesn't disturb Project 1's existing regression references
-(`outputs/history/regression_reference_v1.2/`). Regenerate with
-`uv run python scripts/model_risk_regimes/build_interim.py --start 2019-01-01 --end <edge> --out data/interim/hourly_merit_order.parquet`,
-then `build_features.py --data-path data/interim/hourly_merit_order.parquet --out data/processed/features_merit_order.parquet`.
+**`interim/hourly_data.parquet` and `processed/features_hourly.parquet`**
+are this repo's single source of truth for hourly interim/feature data,
+built by the generic `build_interim.py`/`build_features.py` pipeline above.
+They cover 2020-01-01 to the day of the last regeneration and grow forward
+over time. Regenerate with
+`uv run python scripts/model_risk_regimes/build_interim.py --start 2020-01-01 --end <today> --out data/interim/hourly_data.parquet`,
+then `build_features.py --data-path data/interim/hourly_data.parquet --out data/processed/features_hourly.parquet`.
 The exact data stand `hourly_model_v2`'s reference run (Step 7.7, Teil C) used is
-hashed in `outputs/results/hourly_model_v2/data_snapshot.csv`.
+hashed in `outputs/results/hourly_model_v2/data_snapshot.csv` (predates the
+2026-10-30 consolidation below, still names the then-current
+`hourly_merit_order.parquet`/`features_merit_order.parquet` files -- a
+correct historical record, not stale).
+
+A small amount of older history (2019-01-01 to 2019-12-31) lives separately
+in `interim/archive/hourly_before_2020.parquet` and
+`processed/archive/features_before_2020.parquet` -- archival only, not read
+by any script by default. It predates what `hourly_model_v2`'s beta
+long-history side channel actually needs (`beta_window_days=3*365` from
+`FIRST_ANCHOR_MONTH=2023-05-01` only needs data back to ~2020-05,
+comfortably inside 2020-01-01).
+
+**Legacy reference numbers vs. a growing data file (2026-10-30
+consolidation):** until 2026-10-30, `model_risk_regimes`'s legacy
+toolchain (`backtest.py`, `backtest_risk.py`, `compute_risk.py`,
+`calibrate_conformal.py`, `evaluate_quantiles.py`, `evaluate_reliability.py`,
+`export_report_assets.py`, `run_dm_test.py`, `tune.py`) defaulted to a
+separate, frozen file (`interim/hourly.parquet`/`processed/features.parquet`,
+2020-01-01..2025-12-31) while `hourly_model_v2`'s own scripts
+(`build_price_beta_table.py`, `run_price_model.py`) already used the
+live-growing `hourly_merit_order.parquet`/`features_merit_order.parquet`
+pair. Both were consolidated into the single `hourly_data.parquet`/
+`features_hourly.parquet` pair above -- every script now reads the same,
+growing file, and the frozen/merit-order filenames no longer exist.
+
+This means the legacy toolchain's published numbers no longer automatically
+stay pinned to a fixed end date just because the underlying file stopped
+growing -- re-running them now picks up whatever data exists on the day of
+the run. The numbers currently published in `outputs/model_validation_report.md`
+and the CSVs/figures `export_report_assets.py`/`run_dm_test.py` produce
+reflect a **data window of 2020-01-01 to 2025-12-31** and are archived
+unchanged, as a permanent reference snapshot, under `outputs/archive_251231/`
+(mirrors `outputs/`'s own structure: `model_validation_report.md`,
+`results/*.csv`, `assets/*.png`). Re-running the legacy scripts against the
+now-growing SSOT is expected to produce numbers that diverge from that
+archive over time -- that is intended, not a bug; `outputs/archive_251231/`
+is the fixed historical anchor to compare against.
 
 `data/raw/entsoe` also received 48 additional cached months (Aug-Oct 2026,
 across all six ENTSO-E series) copied from `sbl-energy-forecast`'s cache,
@@ -70,9 +104,11 @@ flipped on load, not in this copy.
   was originally copied (not re-run) to avoid. At the time, this required
   calling `run_renewables_backtest` directly in an ad hoc snippet for a short
   window (`target_hourly` restricted to 2025-07-01..2026-10-20, built from
-  `interim/hourly_merit_order.parquet` -- not the shared `interim/hourly.parquet`,
-  which only extends to 2025-12-31 and was deliberately left untouched, same
-  reasoning as 7.2 Phase 0) with the variant's exact parameters
+  the then-separate `interim/hourly_merit_order.parquet` -- not the
+  then-frozen `interim/hourly.parquet`, which only extended to 2025-12-31 and
+  was deliberately left untouched, same reasoning as 7.2 Phase 0; both were
+  consolidated into `interim/hourly_data.parquet` in the 2026-10-30
+  consolidation above) with the variant's exact parameters
   (`window="rolling"`, `train_span_days=365`, `objective="l2"`, default
   `refit_every=7`). Only the rows with `valid_time_utc` after the existing
   file's previous max (2026-09-07 09:00 UTC) were appended (1,044 new rows,

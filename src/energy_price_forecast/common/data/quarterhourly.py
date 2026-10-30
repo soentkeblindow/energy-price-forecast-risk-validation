@@ -1,7 +1,7 @@
 """Native quarter-hourly day-ahead price artefact.
 
 data/normalize.py::to_hourly resamples day-ahead prices to hourly and only
-that resample is persisted in hourly.parquet -- the native quarter-hourly
+that resample is persisted in hourly_data.parquet -- the native quarter-hourly
 values are never kept. This module builds the separate, unresampled series
 that the Arena baseline replica and the shape profile need (spec 6.4,
 section 5.1 a2). No resampling is applied here; that is the point of the

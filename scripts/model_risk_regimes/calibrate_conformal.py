@@ -45,7 +45,7 @@ def _parse_args() -> argparse.Namespace:
     )
     p.add_argument("--calibration-window", type=int, default=None)
     p.add_argument("--preds-dir", default=Path("data/processed"), type=Path)
-    p.add_argument("--data-path", default=Path("data/interim/hourly.parquet"), type=Path)
+    p.add_argument("--data-path", default=Path("data/interim/hourly_data.parquet"), type=Path)
     p.add_argument("--out-dir", default=Path("data/processed"), type=Path)
     p.add_argument("--study", default="conformal_scaled")
     p.add_argument("--note", default="", help="MLflow tag: free-text run note.")

@@ -5,7 +5,7 @@
 help:
 	@echo "Available targets:"
 	@echo "  data            Build interim + feature parquet from raw data (needs data/raw/ and an ENTSO-E API key in .env -- see README 'Getting started')"
-	@echo "  backtest        Run the flagship LightGBM walk-forward backtest (needs data/processed/features.parquet from 'make data'; no API key needed directly)"
+	@echo "  backtest        Run the flagship LightGBM walk-forward backtest (needs data/processed/features_hourly.parquet from 'make data'; no API key needed directly)"
 	@echo "  test            Run the test suite (pytest)"
 	@echo "  lint            Run ruff check, ruff format --check, and mypy (mirrors CI)"
 	@echo "  dashboard       Launch the Streamlit Backtest Explorer locally"
