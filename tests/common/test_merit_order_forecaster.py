@@ -375,6 +375,40 @@ def test_beta_window_days_excludes_data_before_window_through_forecaster() -> No
     assert abs(expanding._beta_per_bin.loc[5] - 0.6) > 0.5  # type: ignore[union-attr]
 
 
+def test_extra_matrix_columns_do_not_change_beta_or_srmc() -> None:
+    # hourly_model_v2.1's --include-extra-features temperature (Sprint 7
+    # Step 7.4a) merges three extra, SRMC/beta-unrelated columns straight
+    # into the matrix passed to fit/predict (no new MeritOrderForecaster
+    # parameter -- see docs/sprint7_step7_4a_log.md's plan). This proves
+    # that's safe: _bin_and_srmc reads only residual_load_forecast/
+    # SRMC_COLUMNS, so unrelated extra columns must leave beta/srmc/rl_bin
+    # bit-identical. tree_pred/y_pred are deliberately NOT compared -- the
+    # tree itself did see different inputs, so those are allowed to differ.
+    frame, idx = _synthetic_long_history(n_days=300, beta_bin5=0.6, beta_bin7=0.9)
+    y_train, x_train = _fold_x_y(frame, idx, start_day=190, end_day=200)
+    _, x_test = _fold_x_y(frame, idx, start_day=200, end_day=201)
+
+    extra_train = np.linspace(-5.0, 20.0, len(x_train) * 3).reshape(len(x_train), 3)
+    extra_test = np.linspace(-5.0, 20.0, len(x_test) * 3).reshape(len(x_test), 3)
+    temp_cols = ["temperature_north", "temperature_central", "temperature_south"]
+    x_train_plus = x_train.assign(**{c: extra_train[:, i] for i, c in enumerate(temp_cols)})
+    x_test_plus = x_test.assign(**{c: extra_test[:, i] for i, c in enumerate(temp_cols)})
+
+    model_base = MeritOrderForecaster(frame, beta_window_days=None)
+    model_base.fit(y_train, x_train)
+    components_base = model_base.predict_components(x_test.index, history=y_train, x_test=x_test)
+
+    model_plus = MeritOrderForecaster(frame, beta_window_days=None)
+    model_plus.fit(y_train, x_train_plus)
+    components_plus = model_plus.predict_components(
+        x_test_plus.index, history=y_train, x_test=x_test_plus
+    )
+
+    pd.testing.assert_series_equal(components_base["beta"], components_plus["beta"])
+    pd.testing.assert_series_equal(components_base["srmc"], components_plus["srmc"])
+    pd.testing.assert_series_equal(components_base["rl_bin"], components_plus["rl_bin"])
+
+
 def test_crisis_rows_excluded_from_beta_estimation() -> None:
     frame, idx = _synthetic_long_history(n_days=300, beta_bin5=0.6, beta_bin7=0.9)
     # Mark everything before day 199 as crisis. Fold day D=200 anchors to day

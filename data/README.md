@@ -137,6 +137,23 @@ DE's (`2025-09-30 22:00:00 UTC`, matching
 resulting hourly grid, FR/DE price correlation ~0.77 over the full range --
 see `docs/sprint7_step7_5_log.md` Phase 0 for the full coverage check.
 
+**Region-mean temperature features (2026-11-02, Sprint 7 Step 7.4a):**
+`processed/temperature_regions.parquet` -- three columns
+`temperature_north/central/south`, indexed by `(run_init_utc,
+valid_time_utc)` like `renewables_forecast_rolling365_l2.parquet`. Built by
+`scripts/model_renewables/build_temperature_artifact.py` from the existing
+`interim/weather_ifs_run00.parquet` -- reuses
+`model_renewables.features.renewables_forecast.assign_runs` directly (same
+D-1 00Z run assignment, same time alignment, same whole-day exclusion on
+missing/incomplete weather coverage), then averages each region's
+`temperature_2m` over `weather_grid.GRID_POINTS`' own `region` field
+(north=7 onshore, central=3 onshore, south=3 onshore + 2 solar-only=5 land
+points, offshore excluded). Read only by
+`scripts/model_risk_regimes/run_price_model.py`'s `--include-extra-features
+temperature` flag (`hourly_model_v2.1`, Sprint 7 Step 7.4a) -- merged only
+into the inner LightGBM tree's input matrix, never into the SRMC/beta
+computation. No new Open-Meteo calls, full rebuild every run.
+
 **Map boundaries (2026-10-21):** `geo/germany_boundaries.geojson` (committed,
 ~80 KB) is used only by `scripts/model_renewables/plot_weather_grid.py` for the
 README grid-point map. It is a one-off extract of Natural Earth 1:10m v5.1.2

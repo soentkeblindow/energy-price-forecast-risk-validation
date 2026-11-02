@@ -37,6 +37,7 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import hashlib
+import json
 import logging
 import time
 from pathlib import Path
@@ -89,6 +90,21 @@ RENEWABLES_FILE = Path("data/processed/renewables_forecast_rolling365_l2.parquet
 
 _VALID_VERSIONS: tuple[str, ...] = ("hourly_model_v1", "hourly_model_v2")
 _VALID_RUNGS: tuple[str, ...] = ("L1", "L2")
+
+# --include-extra-features (Sprint 7 Step 7.4a, hourly_model_v2.1): the
+# counterpart to --drop-features. Only "temperature" exists so far --
+# temperature_north/central/south, built by
+# scripts/model_renewables/build_temperature_artifact.py, merged into every
+# matrix as ordinary passthrough columns (no new MeritOrderForecaster
+# parameter needed: _bin_and_srmc only ever reads residual_load_forecast/
+# SRMC_COLUMNS, so an unrelated extra column is structurally invisible to
+# beta/SRMC -- see tests/common/test_merit_order_forecaster.py::
+# test_extra_matrix_columns_do_not_change_beta_or_srmc).
+_VALID_EXTRA_FEATURE_GROUPS: tuple[str, ...] = ("temperature",)
+_EXTRA_FEATURE_GROUP_COLUMNS: dict[str, tuple[str, ...]] = {
+    "temperature": ("temperature_north", "temperature_central", "temperature_south"),
+}
+TEMPERATURE_FILE = Path("data/processed/temperature_regions.parquet")
 
 
 def _parse_scope(
@@ -362,6 +378,16 @@ def _parse_args() -> argparse.Namespace:
         "comes from the separate long_history side channel, untouched by this flag). "
         "Same drop_features helper backtest.py uses. Requires --tag.",
     )
+    p.add_argument(
+        "--include-extra-features",
+        default="",
+        help="Comma-separated feature GROUPS to add to every matrix (counterpart to "
+        "--drop-features) -- currently only 'temperature' (adds temperature_north/"
+        "central/south from data/processed/temperature_regions.parquet). beta/SRMC "
+        "are unaffected -- MeritOrderForecaster only reads residual_load_forecast/"
+        "SRMC_COLUMNS from the matrix, so an extra passthrough column is "
+        "structurally invisible to it. Requires --tag.",
+    )
     p.add_argument("--study", default="price_reference", help="MLflow tag: logical study grouping.")
     p.add_argument("--note", default="", help="MLflow tag: free-text run note.")
     args = p.parse_args()
@@ -369,6 +395,27 @@ def _parse_args() -> argparse.Namespace:
     args.versions = _parse_scope(args.versions, _VALID_VERSIONS, "versions", p)
     args.rungs = _parse_scope(args.rungs, _VALID_RUNGS, "rungs", p)
     args.drop_features = [c.strip() for c in args.drop_features.split(",") if c.strip()]
+    args.include_extra_features = [
+        g.strip() for g in args.include_extra_features.split(",") if g.strip()
+    ]
+
+    unknown_groups = [
+        g for g in args.include_extra_features if g not in _VALID_EXTRA_FEATURE_GROUPS
+    ]
+    if unknown_groups:
+        p.error(
+            f"--include-extra-features: unknown group(s) {unknown_groups}, "
+            f"valid: {_VALID_EXTRA_FEATURE_GROUPS}"
+        )
+    requested_extra_cols = {
+        c for g in args.include_extra_features for c in _EXTRA_FEATURE_GROUP_COLUMNS[g]
+    }
+    conflict = requested_extra_cols & set(args.drop_features)
+    if conflict:
+        p.error(
+            f"--include-extra-features and --drop-features both reference "
+            f"{sorted(conflict)} -- pick one"
+        )
 
     non_default_harness_params = (
         args.train_span_days != 90
@@ -377,12 +424,14 @@ def _parse_args() -> argparse.Namespace:
         or args.test_end is not None
         or args.window != "rolling"
         or bool(args.drop_features)
+        or bool(args.include_extra_features)
     )
     if non_default_harness_params and not args.tag:
         p.error(
             "--tag is required when overriding --train-span-days/--refit-every/"
-            "--test-start/--test-end/--window/--drop-features -- it suffixes every "
-            "output file so two different sweeps never overwrite each other's files."
+            "--test-start/--test-end/--window/--drop-features/--include-extra-features "
+            "-- it suffixes every output file so two different sweeps never overwrite "
+            "each other's files."
         )
     return args
 
@@ -459,6 +508,24 @@ def main() -> None:
             if hide_from_tree
             else "",
         )
+
+    if args.include_extra_features:
+        # Ordinary passthrough columns -- see the module-level comment next
+        # to _VALID_EXTRA_FEATURE_GROUPS for why no new MeritOrderForecaster
+        # parameter is needed. Merged into all four matrices uniformly, the
+        # same way --drop-features' matrix_drop already applies uniformly
+        # across all four (hourly_model_v1 has no SRMC/beta to protect
+        # either way, so temperature is just an ordinary feature there).
+        temperature = pd.read_parquet(TEMPERATURE_FILE)
+        temp_cols = list(_EXTRA_FEATURE_GROUP_COLUMNS["temperature"])
+        flat = temperature[temp_cols]
+        flat.index = flat.index.get_level_values("valid_time_utc")
+        flat = flat.reindex(index)
+        l1_matrix = l1_matrix.assign(**{c: flat[c] for c in temp_cols})
+        l2_matrix = l2_matrix.assign(**{c: flat[c] for c in temp_cols})
+        l1_matrix_v2 = l1_matrix_v2.assign(**{c: flat[c] for c in temp_cols})
+        l2_matrix_v2 = l2_matrix_v2.assign(**{c: flat[c] for c in temp_cols})
+        logger.info("added extra tree-only feature(s): %s", temp_cols)
 
     edge = last_complete_local_day(price)
     logger.info("data edge: %s", edge.date())
@@ -579,6 +646,23 @@ def main() -> None:
 
     # --- C.4 outputs ----------------------------------------------------------
     out_dir.mkdir(parents=True, exist_ok=True)
+
+    run_config = {
+        "versions": args.versions,
+        "rungs": args.rungs,
+        "train_span_days": config_v2.train_span_days,
+        "refit_every": config_v2.refit_every,
+        "test_start": str(test_start.date()),
+        "test_end": str(test_end.date()),
+        "window": args.window,
+        "tag": args.tag,
+        "drop_features": args.drop_features,
+        "include_extra_features": args.include_extra_features,
+        "data_edge": str(edge.date()),
+        "n_folds": len(folds),
+    }
+    run_config_path = out_dir / f"run_config{agg_suffix}.json"
+    run_config_path.write_text(json.dumps(run_config, indent=2))
 
     snapshot_rows = [file_fingerprint(p) for p in A2_INPUT_FILES] + [renewables_fp]
     snapshot_path = out_dir / f"data_snapshot{agg_suffix}.csv"
@@ -733,7 +817,7 @@ def main() -> None:
 
     logger.info(
         "done; wrote %d file(s) to %s (beta_monthly.csv comes from build_price_beta_table.py)",
-        len({snapshot_path, metrics_path, export_path}),
+        len({snapshot_path, metrics_path, export_path, run_config_path}),
         out_dir,
     )
 
@@ -747,7 +831,7 @@ def main() -> None:
     # artefacts -- so train-span-days/test-start/test-end/window/refit-every
     # sweeps are queryable and comparable (mlflow ui / mlflow.search_runs),
     # not just loose CSV files.
-    written_paths = [snapshot_path, metrics_path, export_path]
+    written_paths = [snapshot_path, metrics_path, export_path, run_config_path]
     mlflow.set_tracking_uri("file:./mlruns")
     mlflow.set_experiment(PRICE_MODEL_EXPERIMENT_NAME)
     run_name = f"price_model{agg_suffix}" if agg_suffix else "price_model"
@@ -764,6 +848,7 @@ def main() -> None:
                 "window": args.window,
                 "tag": args.tag,
                 "drop_features": ",".join(args.drop_features),
+                "include_extra_features": ",".join(args.include_extra_features),
                 "n_folds": len(folds),
             }
         )

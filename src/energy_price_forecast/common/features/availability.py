@@ -103,6 +103,12 @@ _RAW_AVAILABILITY: dict[str, Availability] = {
     "solar_forecast_nwp": Availability.NWP_RECONSTRUCTION,
     "residual_load_forecast_nwp": Availability.NWP_RECONSTRUCTION,
     "renewable_share_forecast_nwp": Availability.NWP_RECONSTRUCTION,
+    # Region-mean 2m-temperature, same weather-run reconstruction as the
+    # columns above (scripts/model_renewables/build_temperature_artifact.py,
+    # Sprint 7 Step 7.4a) -- tree-only input for hourly_model_v2.1.
+    "temperature_north": Availability.NWP_RECONSTRUCTION,
+    "temperature_central": Availability.NWP_RECONSTRUCTION,
+    "temperature_south": Availability.NWP_RECONSTRUCTION,
 }
 
 

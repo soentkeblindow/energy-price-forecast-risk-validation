@@ -139,3 +139,82 @@ both versions (p<1e-6) and matches the error-decomposition study's own
   a price move once it enters the long-history pool); in long calm gas
   periods, β drifts back down.
 - The 3-year β-window length is a set choice, not a measured one.
+
+## 6. `hourly_model_v2.1`: `hourly_model_v2` with a 365-day training window and three temperature features
+
+`hourly_model_v2.1` is not a separate code version — no `HOURLY_MODEL_V2_1`
+constant exists in `common/models/price_model.py`. It is `hourly_model_v2`
+run with two harness/feature overrides (Sprint 7 Step 7.4a):
+
+```
+--train-span-days 365 --include-extra-features temperature
+```
+
+- **Training window:** 365 days rolling, instead of `hourly_model_v2`'s
+  default 90 days (`--train-span-days`, an existing harness flag).
+- **Temperature features:** three new tree-only columns,
+  `temperature_north/central/south` — region-mean 2m temperature from the
+  existing ECMWF IFS weather archive (`data/interim/weather_ifs_run00.parquet`),
+  reconstructed the same way as the L2 wind/solar features (same D-1 00Z
+  run assignment, same whole-day exclusion on missing/incomplete weather
+  coverage). Region membership follows `common/data/weather_grid.py`'s own
+  `GridPoint.region` field: north = 7 onshore points, central = 3 onshore
+  points, south = 3 onshore + 2 solar-only = 5 land points (offshore
+  excluded). Built by `scripts/model_renewables/build_temperature_artifact.py`,
+  stored at `data/processed/temperature_regions.parquet`. These three
+  columns feed only the inner LightGBM tree; β/SRMC are computed exactly as
+  in `hourly_model_v2` (bit-identical, see
+  `tests/common/test_merit_order_forecaster.py::test_extra_matrix_columns_do_not_change_beta_or_srmc`)
+  — the shared `hourly_model_v2/beta_monthly.csv` table applies unchanged.
+
+**Reference run:** tag `v2_1_rolling365_temperature`, output under
+`data/processed/price_model_runs/` (gitignored, referenced here as a path,
+not a link — that directory is never checked in). Data edge 2026-10-28.
+
+**Result** (common window with the `hourly_model_v2` reference above,
+2025-03-17 to 2026-10-20, n=13,318 hours; "no temperature" is the same
+365-day window without the temperature flag, run as a control to separate
+the two changes):
+
+| Model | MAE | RMSE |
+|---|---|---|
+| `hourly_model_v2` (90-day window) | 13.24 | 22.37 |
+| `hourly_model_v2.1` without temperature (365-day window only) | 12.85 | 21.72 |
+| `hourly_model_v2.1` with temperature (365-day window + temperature) | 12.85 | 21.62 |
+
+Diebold-Mariano (squared error, daily blocks, HAC lag 7):
+
+| Comparison | p-value |
+|---|---|
+| `hourly_model_v2.1` (+temperature) vs. `hourly_model_v2` | 0.049 |
+| `hourly_model_v2.1` (no temperature) vs. `hourly_model_v2` | 0.119 |
+| `hourly_model_v2.1` (+temperature) vs. `hourly_model_v2.1` (no temperature) | 0.505 |
+
+**Rationale:** the 365-day training window is the actual driver of the
+improvement over `hourly_model_v2` — isolating temperature alone
+(+temperature vs. no temperature, both on the 365-day window) shows no
+significant effect (p≈0.5). The combined +temperature configuration lands
+just under the conventional 5% significance threshold against
+`hourly_model_v2`, while the 365-day-window-only configuration does not
+quite reach it (p≈0.12) — read together, this looks like noise around the
+threshold rather than a real temperature contribution. The owner decided
+to accept the temperature feature into `hourly_model_v2.1` anyway, on
+plausibility rather than a measured gain: temperature is a genuine causal
+driver of both demand and renewable generation, so including it is
+physically reasonable even where its marginal statistical signal in this
+window is weak (the spec's own decision rule — no pre-set success
+criterion, decided on plausibility once the owner has seen the numbers).
+
+**Known limitations (new, in addition to Section 5's):**
+
+- Shorter usable history: the ECMWF IFS weather archive only starts
+  2024-03-14, so `hourly_model_v2.1`'s test window cannot start before
+  2025-03-17 (the 365-day training window needs a full year of prior
+  weather coverage) — about 15 months shorter than `hourly_model_v2`'s own
+  2024-06-15 start.
+- Temperature is partly already implicit in the existing load forecast
+  feature (`load_forecast_day_ahead`) — the tree may be re-deriving a
+  signal it can already access indirectly, one plausible explanation for
+  the weak isolated effect measured above.
+- This decision was made by inspection of the numbers above, without a
+  pre-set success threshold (Sprint 7 Step 7.4a spec, section 5).

@@ -339,6 +339,52 @@ def test_nwp_reconstruction_for_target_deliberately_wrong_run_init_fails_leakage
         assert_no_leakage([f])
 
 
+def _synthetic_temperature_predictions(
+    run_init: str, valid_times: pd.DatetimeIndex
+) -> pd.DataFrame:
+    index = pd.MultiIndex.from_arrays(
+        [pd.DatetimeIndex([run_init] * len(valid_times), tz="UTC"), valid_times],
+        names=["run_init_utc", "valid_time_utc"],
+    )
+    return pd.DataFrame(
+        {"temperature_north": np.arange(len(valid_times), dtype=float)}, index=index
+    )
+
+
+def test_temperature_nwp_reconstruction_threads_real_run_init() -> None:
+    # temperature_north/central/south (scripts/model_renewables/
+    # build_temperature_artifact.py, Sprint 7 Step 7.4a) share the exact
+    # same nwp_reconstruction_for_target plumbing as wind_onshore_forecast_nwp
+    # above -- one region is enough to prove the mechanism.
+    predictions = _synthetic_temperature_predictions("2024-01-14 00:00", _TARGET_JAN15)
+    f = nwp_reconstruction_for_target(
+        "temperature_north",
+        predictions,
+        "temperature_north",
+        "temperature_north",
+        target_index=_TARGET_JAN15,
+    )
+    assert (f.knowledge_time == pd.Timestamp("2024-01-14 00:00", tz="UTC")).all()
+    np.testing.assert_array_equal(f.values.to_numpy(), np.arange(24, dtype=float))
+    assert_no_leakage([f])  # real run_init is well before gate closure here
+
+
+def test_temperature_nwp_reconstruction_deliberately_wrong_run_init_fails_leakage() -> None:
+    # Negative control: an artificially late run_init (after gate closure)
+    # must be caught by the existing, unmodified assert_no_leakage.
+    late_run_init = gate_closure_for_index(_TARGET_JAN15)[0] + pd.Timedelta(hours=1)
+    predictions = _synthetic_temperature_predictions(str(late_run_init), _TARGET_JAN15)
+    f = nwp_reconstruction_for_target(
+        "temperature_north",
+        predictions,
+        "temperature_north",
+        "temperature_north",
+        target_index=_TARGET_JAN15,
+    )
+    with pytest.raises(LeakageError, match="temperature_north"):
+        assert_no_leakage([f])
+
+
 def test_nwp_reconstruction_for_target_non_nwp_column_raises() -> None:
     predictions = _synthetic_predictions("2024-01-14 00:00", _TARGET_JAN15)
     with pytest.raises(ValueError, match="NWP_RECONSTRUCTION"):
